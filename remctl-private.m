@@ -19,6 +19,17 @@
 - (id)fetchTemplateWithObjectID:(id)objectID error:(NSError **)error;
 - (id)fetchPrimaryActiveCloudKitAccountWithError:(NSError **)error;
 - (id)fetchDefaultAccountWithError:(NSError **)error;
+- (id)fetchDefaultListWithError:(NSError **)error;
+- (NSArray *)fetchEligibleDefaultListsWithError:(NSError **)error;
+@end
+
+@interface REMDaemonUserDefaults : NSObject
+- (void)setPreferredDefaultListID:(id)objectID;
+- (id)preferredDefaultListID;
+@end
+
+@interface REMUserDefaults : NSObject
++ (REMDaemonUserDefaults *)daemonUserDefaults;
 @end
 
 @interface REMSaveRequest : NSObject
@@ -160,6 +171,7 @@
 - (id)account;
 - (id)remObjectID;
 - (id)parentList;
+- (NSString *)name;
 @end
 
 @interface REMListGroceryContextChangeItem : NSObject
@@ -699,6 +711,8 @@ int main(int argc, const char * argv[]) {
             @"set_list_appearance",
             @"set_list_pinned",
             @"set_smart_list_pinned",
+            @"set_default_list",
+            @"get_default_list",
             @"categorize_grocery_items",
             @"create_smart_list",
             @"update_smart_list",
@@ -1365,6 +1379,88 @@ int main(int argc, const char * argv[]) {
                 @"action": action,
                 @"smartListId": smartListID,
                 @"pinned": @([pinned boolValue]),
+            });
+            return 0;
+        }
+        if ([action isEqualToString:@"get_default_list"]) {
+            REMStore *store = [REMStore new];
+            id list = [store fetchDefaultListWithError:&error];
+            if (!list) {
+                fail(error.localizedDescription ?: @"Could not read default list");
+            }
+            NSString *name = [list respondsToSelector:@selector(name)] ? ([list name] ?: @"") : @"";
+            id objectID = [list respondsToSelector:@selector(remObjectID)] ? [list remObjectID] : nil;
+            NSString *urlStr = objectID && [objectID respondsToSelector:@selector(urlRepresentation)] ? [[objectID urlRepresentation] absoluteString] : @"";
+            NSString *uuidStr = objectID && [objectID respondsToSelector:@selector(uuid)] ? [[objectID uuid] UUIDString] : @"";
+            output(@{
+                @"name": name,
+                @"id": urlStr,
+                @"uuid": uuidStr,
+            });
+            return 0;
+        }
+        if ([action isEqualToString:@"set_default_list"]) {
+            NSString *listID = cmd[@"listId"];
+            if (![listID isKindOfClass:[NSString class]] || listID.length == 0) {
+                fail(@"listId is required");
+            }
+            id objectID = [REMObjectID objectIDWithURL:listURL(listID)];
+            if (!objectID) {
+                fail(@"Could not build ReminderKit list object ID");
+            }
+            REMStore *store = [REMStore new];
+            id list = [store fetchListWithObjectID:objectID error:&error];
+            if (!list) {
+                fail(error.localizedDescription ?: @"List not found");
+            }
+            // fetchEligibleDefaultListsWithError: appeared in macOS 26; the other selectors below have shipped for years.
+            if (![store respondsToSelector:@selector(fetchEligibleDefaultListsWithError:)]) {
+                fail(@"ReminderKit does not support default-list eligibility on this OS");
+            }
+            NSArray *eligible = [store fetchEligibleDefaultListsWithError:&error];
+            BOOL isEligible = NO;
+            for (id candidate in eligible) {
+                id candidateID = [candidate respondsToSelector:@selector(remObjectID)] ? [candidate remObjectID] : nil;
+                if (candidateID && [[[candidateID uuid] UUIDString] caseInsensitiveCompare:[[[list remObjectID] uuid] UUIDString]] == NSOrderedSame) {
+                    isEligible = YES;
+                    break;
+                }
+            }
+            if (!isEligible) {
+                fail(@"List is not eligible to be the default list for new reminders");
+            }
+            REMDaemonUserDefaults *defaults = [REMUserDefaults daemonUserDefaults];
+            [defaults setPreferredDefaultListID:objectID];
+
+            BOOL matched = NO;
+            NSString *resolvedName = @"";
+            for (int attempt = 0; attempt < 5; attempt++) {
+                NSError *readError = nil;
+                id resolved = [store fetchDefaultListWithError:&readError];
+                if (resolved && [resolved respondsToSelector:@selector(remObjectID)]) {
+                    id resolvedID = [resolved remObjectID];
+                    if (resolvedID && [resolvedID respondsToSelector:@selector(uuid)]) {
+                        NSString *resolvedUUID = [[resolvedID uuid] UUIDString];
+                        NSString *targetUUID = [[objectID uuid] UUIDString];
+                        if (resolvedUUID && [resolvedUUID caseInsensitiveCompare:targetUUID] == NSOrderedSame) {
+                            matched = YES;
+                            if ([resolved respondsToSelector:@selector(name)]) {
+                                resolvedName = [resolved name] ?: @"";
+                            }
+                            break;
+                        }
+                    }
+                }
+                [NSThread sleepForTimeInterval:0.1];
+            }
+            if (!matched) {
+                fail(@"Default list write did not take effect after retries");
+            }
+            output(@{
+                @"status": @"updated",
+                @"action": action,
+                @"listId": listID,
+                @"name": resolvedName ?: @"",
             });
             return 0;
         }

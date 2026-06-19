@@ -419,6 +419,31 @@ class LiveMatrix:
         self.assert_true(items is not None, "template-applied list is not readable")
         self.record("template-apply", "passed", list_name)
 
+    def run_default_list(self):
+        target = f"{self.prefix} Default"
+        original_payload = self.json_command(["default-list", "--show", "--json"])
+        self.assert_true(
+            isinstance(original_payload, dict) and "defaultList" in original_payload,
+            "could not capture original default list before test",
+        )
+        original_name = original_payload.get("defaultList") or ""
+        self.create_list(target, "--private")
+        try:
+            updated = self.json_command(["default-list", target, "--private", "--json"])
+            self.assert_true(updated.get("status") == "updated", "default-list set did not report updated")
+            shown = self.retry(lambda: self.json_command(["default-list", "--show", "--json"]).get("defaultList") == target and target)
+            self.assert_true(bool(shown), "default-list --show did not reflect the new default")
+            self.create_reminder(f"{self.prefix} Default Probe")
+            landed = self.retry(lambda: [item for item in self.show_list(target) if item.get("title") == f"{self.prefix} Default Probe"])
+            self.assert_true(bool(landed), "reminder created with no list did not land in the new default list")
+            self.record("default-list set and honor", "passed", target)
+        finally:
+            if original_name:
+                self.json_command(["default-list", original_name, "--private", "--json"])
+            restored = self.retry(lambda: self.json_command(["default-list", "--show", "--json"]).get("defaultList") != target)
+            self.assert_true(bool(restored), "default-list was not restored to the original")
+            self.record("default-list restore", "passed", original_name or "(unset)")
+
     def cleanup(self):
         if self.keep:
             return
@@ -455,6 +480,7 @@ class LiveMatrix:
         source_list = self.run_lists_and_reminders()
         self.run_smart_lists(source_list)
         self.run_templates(source_list)
+        self.run_default_list()
 
 
 def main() -> int:

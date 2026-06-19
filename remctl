@@ -4200,6 +4200,20 @@ def apply_private_smart_list_pinned(db, smart_list_pk, a, pinned):
     sys.exit(1)
 
 
+def apply_private_default_list(db, list_pk, a):
+    require_private_metadata(a)
+    ckid = q_list_ckid(db, list_pk)
+    if not ckid:
+        print("Error: target list has no stable CloudKit identifier.", file=sys.stderr)
+        sys.exit(1)
+    result = private_call({"action": "set_default_list", "listId": ckid})
+    if result and result.get("status") == "updated":
+        return result
+    message = result.get("message") if isinstance(result, dict) else "private helper failed"
+    print(f"Error: {message}", file=sys.stderr)
+    sys.exit(1)
+
+
 def normalize_section_id(value):
     if not value:
         return None
@@ -8633,6 +8647,53 @@ def cmd_list_unpin(a):
     _cmd_list_pin_state(a, False)
 
 
+def read_default_list():
+    result = private_call({"action": "get_default_list"})
+    if not isinstance(result, dict) or result.get("status") == "error":
+        return None
+    if "name" not in result and "id" not in result:
+        return None
+    return {"name": result.get("name"), "id": result.get("id")}
+
+
+def cmd_default_list(a):
+    if getattr(a, "show", False):
+        if getattr(a, "name", None) or getattr(a, "list_id", None) is not None or getattr(a, "private", False):
+            print("Error: --show takes no other arguments.", file=sys.stderr)
+            sys.exit(1)
+        result = read_default_list()
+        if result is None:
+            if a.json:
+                print(json.dumps({"status": "error", "message": "Could not read the default list"}), file=sys.stderr)
+            else:
+                print("Error: could not read the default list.", file=sys.stderr)
+            sys.exit(1)
+        if a.json:
+            print(json.dumps({"defaultList": result.get("name"), "id": result.get("id")}, ensure_ascii=False))
+        else:
+            print(f"Default list: {safe_display(result.get('name') or '')}")
+        return
+    if not private_metadata_enabled(a):
+        print("Error: default-list requires --private.", file=sys.stderr)
+        sys.exit(1)
+    db = open_db()
+    list_ref = resolve_required_list_target_or_die(
+        db,
+        name=getattr(a, "name", None),
+        list_id=getattr(a, "list_id", None),
+    )
+    result = apply_private_default_list(db, list_ref["id"], a)
+    if a.json:
+        print(json.dumps({
+            "status": "updated",
+            "id": list_ref["id"],
+            "name": result.get("name") or list_ref["title"],
+            "private": result,
+        }, ensure_ascii=False))
+    else:
+        print(f"Default list: {safe_display(result.get('name') or list_ref['title'])}")
+
+
 def cmd_list_rename(a):
     new_name = getattr(a, "new_name_option", None) or getattr(a, "new_name", None)
     if getattr(a, "new_name_option", None) and getattr(a, "new_name", None):
@@ -8856,6 +8917,7 @@ _remctl() {
         'list-edit:Edit private list appearance'
         'list-pin:Pin a list or smart list in Reminders'
         'list-unpin:Unpin a list or smart list in Reminders'
+        'default-list:Show or set the default list for new reminders'
         'list-rename:Rename a list'
         'list-delete:Delete a list'
         'onboard:Prompt for macOS permissions and verify readiness'
@@ -9186,6 +9248,14 @@ _remctl() {
                 '--json[JSON output]'
             return
             ;;
+        default-list)
+            _arguments \
+                '--private[Use private ReminderKit default-list write]' \
+                '--list-id[Set the default list by stable numeric ID]:id:' \
+                '--show[Show the current default list (no --private required)]' \
+                '--json[JSON output]'
+            return
+            ;;
         list-delete)
             _arguments \
                 '--list-id[Delete list by stable numeric ID]:id:' \
@@ -9203,7 +9273,7 @@ BASH_COMPLETION = '''_remctl() {
     local cur prev commands
     cur="${COMP_WORDS[COMP_CWORD]}"
     prev="${COMP_WORDS[COMP_CWORD-1]}"
-    commands="lists groups group-info group-create group-edit group-delete smart-lists templates template-info show add done undone edit delete search today upcoming overdue flagged urgent flag unflag tags subtasks info sections sharees stats link open export import list-symbols list-create smart-list-create smart-list-edit smart-list-delete template-create template-apply template-delete list-edit list-pin list-unpin list-rename list-delete onboard doctor setup permissions completion"
+    commands="lists groups group-info group-create group-edit group-delete smart-lists templates template-info show add done undone edit delete search today upcoming overdue flagged urgent flag unflag tags subtasks info sections sharees stats link open export import list-symbols list-create smart-list-create smart-list-edit smart-list-delete template-create template-apply template-delete list-edit list-pin list-unpin default-list list-rename list-delete onboard doctor setup permissions completion"
 
     local cmd="${COMP_WORDS[1]}"
     if [ "$cmd" = "add" ]; then
@@ -9287,6 +9357,9 @@ BASH_COMPLETION = '''_remctl() {
     elif [ "$cmd" = "list-pin" ] || [ "$cmd" = "list-unpin" ]; then
         COMPREPLY=( $(compgen -W "--private --list-id --smart-list-id --json" -- "$cur") )
         return
+    elif [ "$cmd" = "default-list" ]; then
+        COMPREPLY=( $(compgen -W "--private --list-id --show --json" -- "$cur") )
+        return
     elif [ "$cmd" = "list-rename" ]; then
         COMPREPLY=( $(compgen -W "--list-id --new-name --json" -- "$cur") )
         return
@@ -9345,6 +9418,7 @@ complete -c remctl -n "__fish_use_subcommand" -a template-delete -d "Delete a sa
 complete -c remctl -n "__fish_use_subcommand" -a list-edit -d "Edit private list appearance"
 complete -c remctl -n "__fish_use_subcommand" -a list-pin -d "Pin a list or smart list in Reminders"
 complete -c remctl -n "__fish_use_subcommand" -a list-unpin -d "Unpin a list or smart list in Reminders"
+complete -c remctl -n "__fish_use_subcommand" -a default-list -d "Show or set the default list for new reminders"
 complete -c remctl -n "__fish_use_subcommand" -a list-rename -d "Rename a list"
 complete -c remctl -n "__fish_use_subcommand" -a list-delete -d "Delete a list"
 complete -c remctl -n "__fish_use_subcommand" -a onboard -d "Prompt for macOS permissions and verify readiness"
@@ -9471,6 +9545,10 @@ complete -c remctl -n "__fish_seen_subcommand_from list-pin list-unpin" -l priva
 complete -c remctl -n "__fish_seen_subcommand_from list-pin list-unpin" -l list-id -d "Target list by stable numeric ID" -r
 complete -c remctl -n "__fish_seen_subcommand_from list-pin list-unpin" -l smart-list-id -d "Target smart list by stable numeric ID" -r
 complete -c remctl -n "__fish_seen_subcommand_from list-pin list-unpin" -l json -d "JSON output"
+complete -c remctl -n "__fish_seen_subcommand_from default-list" -l private -d "Use private ReminderKit default-list write"
+complete -c remctl -n "__fish_seen_subcommand_from default-list" -l list-id -d "Set the default list by stable numeric ID" -r
+complete -c remctl -n "__fish_seen_subcommand_from default-list" -l show -d "Show the current default list (no --private required)"
+complete -c remctl -n "__fish_seen_subcommand_from default-list" -l json -d "JSON output"
 complete -c remctl -n "__fish_seen_subcommand_from list-rename" -l list-id -d "Rename list by stable numeric ID" -r
 complete -c remctl -n "__fish_seen_subcommand_from list-rename" -l new-name -d "New list name" -r
 complete -c remctl -n "__fish_seen_subcommand_from list-delete" -l list-id -d "Delete list by stable numeric ID" -r
@@ -10807,6 +10885,13 @@ def main():
     c.add_argument("--private", action="store_true", help="Required for private ReminderKit list pinning")
     js(c)
 
+    c = sub.add_parser("default-list", help="Show or set the default list for new reminders")
+    c.add_argument("name", nargs="?", help="List name to set as the default")
+    c.add_argument("--list-id", type=int, help="Set the default list by stable numeric ID")
+    c.add_argument("--show", action="store_true", help="Show the current default list (no --private required)")
+    c.add_argument("--private", action="store_true", help="Required for private ReminderKit default-list writes")
+    js(c)
+
     c = sub.add_parser("list-rename", help="Rename a list (bridge only)")
     c.add_argument("name", nargs="?", help="List name to rename")
     c.add_argument("new_name", nargs="?", help="New list name")
@@ -11012,6 +11097,7 @@ def main():
         "list-edit": cmd_list_edit,
         "list-pin": cmd_list_pin,
         "list-unpin": cmd_list_unpin,
+        "default-list": cmd_default_list,
         "list-rename": cmd_list_rename,
         "list-delete": cmd_list_delete,
         "export": cmd_export,
