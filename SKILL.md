@@ -53,6 +53,7 @@ High-value guardrails:
 - Do not use `--private` for normal recurrence or normal `--alarm`; those are EventKit features.
 - Do use `--private --early-reminder` for Reminders' Early Reminder menu values; this is separate from EventKit alarms.
 - Location alarms use the `edit --private --location-*` guardrail but are saved through the EventKit bridge as structured-location alarms; verify them in `info --json` under `alarms`.
+- `edit --private --remind-when-messaging "+1...,name@host"` sets Reminders' "Remind me when messaging" trigger (comma-separated phones/emails, ReminderKit-only) by storing the handles on the reminder's `contactHandles`. Verify with `info --json`, which reports them under `contactHandles`. Pass `clear` as the value to remove the trigger.
 - Private rich URLs require public `http` or `https` hosts; loopback, `.local`, private, link-local, multicast, reserved, and unresolved hosts fail before writing. Non-private `--url` is only a notes fallback.
 - Human output strips terminal control characters from Reminders text; use JSON when exact raw values matter.
 - Invalid due dates, recurrence, normal alarms, priorities, and location payloads fail before writing. `upcoming DAYS` accepts 1 through 3650 days.

@@ -103,6 +103,7 @@
 - (id)subtaskContext;
 - (id)urgentAlarmContext;
 - (void)addAlarm:(id)alarm;
+- (void)setContactHandles:(id)contactHandles;
 @end
 
 @interface REMReminderAssignmentContextChangeItem : NSObject
@@ -206,6 +207,10 @@
 
 @interface REMAlarmLocationTrigger : NSObject
 - (instancetype)initWithStructuredLocation:(id)location proximity:(NSInteger)proximity;
+@end
+
+@interface REMContactRepresentation : NSObject
+- (instancetype)initWithPhones:(NSArray<NSString *> *)phones emails:(NSArray<NSString *> *)emails;
 @end
 
 @interface REMAlarm : NSObject
@@ -692,6 +697,7 @@ int main(int argc, const char * argv[]) {
             @"set_urgent",
             @"set_early_reminder",
             @"add_location_alarm",
+            @"set_contact_handles",
             @"create_list",
             @"create_group",
             @"set_list_parent_group",
@@ -1701,6 +1707,22 @@ int main(int argc, const char * argv[]) {
             id alarm = [[REMAlarm alloc] initWithTrigger:trigger];
             [change addAlarm:alarm];
             details[@"locationTitle"] = title;
+        } else if ([action isEqualToString:@"set_contact_handles"]) {
+            if (![change respondsToSelector:@selector(setContactHandles:)]) {
+                fail(@"ReminderKit change item does not support contact handles");
+            }
+            if ([cmd[@"clear"] boolValue]) {
+                [change setContactHandles:nil];
+                details[@"cleared"] = @YES;
+            } else {
+                NSArray<NSString *> *phones = stringArray(cmd[@"phones"], @"phones");
+                NSArray<NSString *> *emails = stringArray(cmd[@"emails"], @"emails");
+                if (phones.count == 0 && emails.count == 0) fail(@"At least one phone or email handle is required");
+                REMContactRepresentation *representation = [[REMContactRepresentation alloc] initWithPhones:phones emails:emails];
+                [change setContactHandles:representation];
+                details[@"phones"] = phones;
+                details[@"emails"] = emails;
+            }
         }
 
         if (([action isEqualToString:@"add_private_metadata"] || [action isEqualToString:@"add_url_attachments"]) && urls.count) {
