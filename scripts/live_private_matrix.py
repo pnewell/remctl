@@ -203,7 +203,7 @@ class LiveMatrix:
             "--new-name",
             renamed,
             "--color",
-            "#30B0C7",
+            "#B14BC9",
             "--emoji",
             "\U0001f4cc",
             "--json",
@@ -213,6 +213,7 @@ class LiveMatrix:
         self.created_lists.add(renamed)
         edited = self.retry(lambda: self.list_named(renamed))
         self.assert_true(bool(edited), "renamed list did not appear")
+        self.assert_true(edited.get("color", {}).get("hex") == "#B14BC9", "edited custom hex color did not round-trip")
         self.assert_true(edited.get("badge", {}).get("emoji") == "\U0001f4cc", "edited emoji badge did not persist")
         self.record("list-edit rename color and emoji", "passed", renamed)
 

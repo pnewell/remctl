@@ -605,6 +605,39 @@ class CliTests(unittest.TestCase):
         self.assertEqual(payload["grocery"]["predefinedSectionsMembershipLength"], 128)
         self.assertEqual(payload["grocery"]["predefinedSectionsChecksum"], "checksum")
 
+    def test_list_to_dict_reads_custom_hex_color(self):
+        # Wrapped NSString form: daHexString stored as archived NSString with trailing alpha byte (#B14BC9FF observed in live store).
+        blob = bytes.fromhex(
+            "62706c6973743030d4010203040506070a582476657273696f6e59246172636869"
+            "7665725424746f7058246f626a6563747312000186a05f100f4e534b6579656441"
+            "72636869766572d1080954726f6f748001a60b0c1f20242b55246e756c6cd90d0e"
+            "0f101112131415161718191a191c1d1e55616c70686155677265656e5624636c61"
+            "73735f1013646153796d626f6c6963436f6c6f724e616d655b6461486578537472"
+            "696e675f1013636b53796d626f6c6963436f6c6f724e616d6554626c7565537265"
+            "645d636f6c6f725247425370616365233ff0000000000000233fd2d2d2d2d2d2d3"
+            "8005800280038002233fe9393939393939233fe636363636363610025663757374"
+            "6f6dd20f212223594e532e737472696e67800459234231344243394646d2252627"
+            "285a24636c6173736e616d655824636c61737365735f100f4e534d757461626c65"
+            "537472696e67a327292a584e53537472696e67584e534f626a656374d225262c2d"
+            "5852454d436f6c6f72a22c2a00080011001a00240029003200370049004c005100"
+            "53005a006000730079007f0086009c00a800be00c300c700d500de00e700e900eb"
+            "00ed00ef00f801010103010a010f0119011b0125012a0135013e01500154015d01"
+            "66016b01740000000000000201000000000000002e000000000000000000000000"
+            "00000177"
+        )
+        payload = self.remctl.list_to_dict({"Z_PK": 1, "ZNAME": "Projects", "ZCKIDENTIFIER": "CK-1", "ZCOLOR": blob})
+        self.assertEqual(payload["color"]["hex"], "#B14BC9")
+
+    def test_validated_list_hex_accepts_and_rejects_expected_shapes(self):
+        f = self.remctl._validated_list_hex
+        self.assertEqual(f(None), "")
+        self.assertEqual(f(""), "")
+        self.assertEqual(f("#B14BC9"), "#B14BC9")
+        self.assertEqual(f("B14BC9"), "#B14BC9")
+        self.assertEqual(f("#B14BC9FF"), "#B14BC9")
+        self.assertEqual(f("#abc"), "")
+        self.assertEqual(f("not-a-hex"), "")
+
     def test_lists_json_reports_grocery_metadata(self):
         db = self._list_db(["Groceries", "Work"], grocery_locales={"Groceries": "en_US"})
         try:

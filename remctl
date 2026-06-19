@@ -426,6 +426,20 @@ def validate_list_color(value, *, private=False):
 def rgb_to_hex(rgb):
     return "#{:02X}{:02X}{:02X}".format(*rgb)
 
+def _validated_list_hex(value):
+    if not isinstance(value, str):
+        return ""
+    match = re.match(r"^#?([0-9a-fA-F]{6})(?:[0-9a-fA-F]{2})?$", value.strip())
+    return f"#{match.group(1).upper()}" if match else ""
+
+def hex_to_rgb(value):
+    """Convert #RRGGBB or #RRGGBBAA to an (r, g, b) tuple, or None on invalid input."""
+    canonical = _validated_list_hex(value) if isinstance(value, str) else ""
+    if not canonical:
+        return None
+    digits = canonical[1:]
+    return tuple(int(digits[i:i + 2], 16) for i in (0, 2, 4))
+
 def blend_rgb(rgb, target=(255, 255, 255), amount=0.34):
     return tuple(round(channel + (target_channel - channel) * amount) for channel, target_channel in zip(rgb, target))
 
@@ -452,7 +466,9 @@ def parse_list_color(blob):
                 hex_uid = obj.get("daHexString")
                 name = objects[name_uid.data] if hasattr(name_uid, 'data') else str(name_uid)
                 hex_str = objects[hex_uid.data] if hex_uid and hasattr(hex_uid, 'data') else ""
-                return {"name": name, "hex": hex_str}
+                if isinstance(hex_str, dict):
+                    hex_str = hex_str.get("NS.string", "")
+                return {"name": name, "hex": _validated_list_hex(hex_str)}
     except Exception:
         pass
     return {"name": "blue", "hex": "#007AFF"}
@@ -490,7 +506,7 @@ def load_list_colors(db):
         ).fetchall()
         for r in rows:
             info = parse_list_color(r["ZCOLOR"])
-            rgb = LIST_COLOR_MAP.get(info["name"], (0, 122, 255))
+            rgb = LIST_COLOR_MAP.get(info["name"]) or hex_to_rgb(info["hex"]) or (0, 122, 255)
             colors[r["ZNAME"]] = rgb
     except Exception:
         pass
