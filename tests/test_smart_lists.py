@@ -9,6 +9,7 @@ from remctl_smart_lists import (
     build_supported_filter_payload,
     decode_smart_list_filter_blob,
     encode_supported_filter_payload,
+    rewrite_filter_payload_tags,
 )
 
 
@@ -161,6 +162,37 @@ class SmartListFilterTests(unittest.TestCase):
         payload = build_supported_filter_payload(priorities=["high"])
 
         self.assertEqual(encode_supported_filter_payload(payload), b'{"priorities":["high"]}')
+
+    def test_rewrite_filter_payload_renames_tag_in_include_and_exclude(self):
+        payload = {"hashtags": {"hashtags": {"operation": "or", "include": ["old", "keep"], "exclude": ["old"]}}}
+
+        payload, changed = rewrite_filter_payload_tags(payload, "old", "new")
+
+        self.assertTrue(changed)
+        self.assertEqual(payload["hashtags"]["hashtags"]["include"], ["new", "keep"])
+        self.assertEqual(payload["hashtags"]["hashtags"]["exclude"], ["new"])
+
+    def test_rewrite_filter_payload_drops_tag_when_new_is_none(self):
+        payload = {"hashtags": {"hashtags": {"operation": "or", "include": ["old", "keep"], "exclude": []}}}
+
+        payload, changed = rewrite_filter_payload_tags(payload, "old", None)
+
+        self.assertTrue(changed)
+        self.assertEqual(payload["hashtags"]["hashtags"]["include"], ["keep"])
+
+    def test_rewrite_filter_payload_ignores_unreferenced_tag(self):
+        payload = {"hashtags": {"hashtags": {"operation": "or", "include": ["keep"], "exclude": []}}}
+
+        _, changed = rewrite_filter_payload_tags(payload, "old", "new")
+
+        self.assertFalse(changed)
+
+    def test_rewrite_filter_payload_ignores_non_tag_filters(self):
+        payload = {"priorities": ["high"]}
+
+        _, changed = rewrite_filter_payload_tags(payload, "old", "new")
+
+        self.assertFalse(changed)
 
 
 if __name__ == "__main__":

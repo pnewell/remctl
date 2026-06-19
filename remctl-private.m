@@ -125,8 +125,19 @@
 - (id)addURLAttachmentWithURL:(NSURL *)url;
 @end
 
+// Discovered via class-dump of ReminderKit; used for tag rename/delete fan-out.
+@interface REMHashtag : NSObject
+- (NSString *)name;
+@end
+
+@interface REMReminderHashtagContext : NSObject
+- (instancetype)initWithReminder:(id)reminder;
+- (NSArray *)hashtags;
+@end
+
 @interface REMReminderHashtagContextChangeItem : NSObject
 - (id)addHashtagWithType:(NSInteger)type name:(NSString *)name;
+- (void)removeHashtag:(id)hashtag;
 @end
 
 @interface REMReminderFlaggedContextChangeItem : NSObject
@@ -681,6 +692,7 @@ int main(int argc, const char * argv[]) {
             @"add_private_metadata",
             @"add_url_attachments",
             @"add_tags",
+            @"rewrite_reminder_hashtags",
             @"add_subtasks",
             @"clone_reminder_tree_to_list",
             @"assign_section",
@@ -1424,6 +1436,79 @@ int main(int argc, const char * argv[]) {
             });
             return 0;
         }
+        if ([action isEqualToString:@"rewrite_reminder_hashtags"]) {
+            id reminderIdsValue = cmd[@"reminderIds"];
+            if (![reminderIdsValue isKindOfClass:[NSArray class]] || [(NSArray *)reminderIdsValue count] == 0) {
+                fail(@"reminderIds must be a non-empty array");
+            }
+            NSArray<NSString *> *reminderIds = (NSArray<NSString *> *)reminderIdsValue;
+            for (id item in reminderIds) {
+                if (![item isKindOfClass:[NSString class]] || [(NSString *)item length] == 0) {
+                    fail(@"reminderIds must contain non-empty strings");
+                }
+            }
+            NSArray<NSString *> *removeTags = stringArray(cmd[@"removeTags"], @"removeTags");
+            NSArray<NSString *> *addTags = stringArray(cmd[@"addTags"], @"addTags");
+            if (removeTags.count == 0 && addTags.count == 0) {
+                fail(@"At least one tag to remove or add is required");
+            }
+            REMStore *store = [REMStore new];
+            REMSaveRequest *save = [[REMSaveRequest alloc] initWithStore:store];
+            NSMutableArray *failures = [NSMutableArray array];
+            NSInteger updated = 0;
+            for (NSString *rid in reminderIds) {
+                NSURL *objectURL = reminderURL(rid);
+                id objectID = [REMObjectID objectIDWithURL:objectURL];
+                if (!objectID) {
+                    [failures addObject:@{@"id": rid, @"error": @"Could not build ReminderKit object ID"}];
+                    continue;
+                }
+                id reminder = [store fetchReminderWithObjectID:objectID error:&error];
+                if (!reminder) {
+                    [failures addObject:@{@"id": rid, @"error": error.localizedDescription ?: @"Reminder not found"}];
+                    continue;
+                }
+                REMReminderChangeItem *change = [save updateReminder:reminder];
+                if (!change) {
+                    [failures addObject:@{@"id": rid, @"error": @"Could not create ReminderKit change item"}];
+                    continue;
+                }
+                id hashtagContext = [change hashtagContext];
+                if (!hashtagContext) {
+                    [failures addObject:@{@"id": rid, @"error": @"ReminderKit reminder change item does not support hashtags"}];
+                    continue;
+                }
+                // A fresh change item carries no hashtags; the reminder's current ones come from its context.
+                REMReminderHashtagContext *current = [[REMReminderHashtagContext alloc] initWithReminder:reminder];
+                for (NSString *name in removeTags) {
+                    for (REMHashtag *hashtag in [current hashtags]) {
+                        if ([[hashtag name] isEqualToString:name]) {
+                            [hashtagContext removeHashtag:hashtag];
+                        }
+                    }
+                }
+                for (NSString *name in addTags) {
+                    [hashtagContext addHashtagWithType:1 name:name];
+                }
+                updated += 1;
+            }
+            if (![save saveSynchronouslyWithError:&error]) {
+                output(@{
+                    @"status": @"error",
+                    @"action": action,
+                    @"message": error.localizedDescription ?: @"ReminderKit hashtag rewrite save failed",
+                });
+                return 1;
+            }
+            output(@{
+                @"status": @"updated",
+                @"action": action,
+                @"updated": @(updated),
+                @"failed": failures,
+            });
+            return 0;
+        }
+
         NSString *reminderID = cmd[@"id"];
         if (![reminderID isKindOfClass:[NSString class]] || reminderID.length == 0) {
             fail(@"id is required");
