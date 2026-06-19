@@ -3844,94 +3844,67 @@ def subtask_rows_for_parent_move(db, reminder):
         return []
 
 
-def wait_for_cloned_reminder_tree(reminder_ckid, target_list_pk, expected_subtasks, attempts=24, delay=0.25):
-    for _ in range(attempts):
-        db = open_db()
-        row = q_reminder_by_identifier(db, reminder_ckid)
-        if row and row["ZLIST"] == target_list_pk:
-            subtasks = q_subtasks_for_parent(db, row["Z_PK"], limit=max(500, expected_subtasks + 5))
-            if len(subtasks) == expected_subtasks:
-                return row, subtasks
-        time.sleep(delay)
-    return None, []
-
-
-def delete_reminder_by_identifier_or_die(reminder):
-    reminder_ckid = _row_get(reminder, "ZCKIDENTIFIER")
-    if bridge_available() and reminder_ckid:
-        result = bridge_call({"action": "delete", "id": reminder_ckid})
-        if result and result.get("status") == "deleted":
-            return result
-    rid = _rem_id(reminder)
-    if rid and osa_by_id_try(reminder["list_name"], rid, "delete r"):
-        return {"status": "deleted", "fallback": "applescript"}
-    title = safe_display(_row_get(reminder, "ZTITLE") or "(untitled)")
-    print(
-        f"Error: cloned '{title}' into the target list, but failed to delete original #{reminder['Z_PK']}. "
-        "Leaving both reminders in place to avoid data loss.",
-        file=sys.stderr,
-    )
-    sys.exit(1)
-
-
-def clone_reminder_tree_to_list_or_die(db, reminder, target_list_ref, child_rows):
+def move_reminder_to_list(db, reminder, target_list_ref, *, exit_on_error=True):
+    # cmd_edit only reaches this helper for parents with subtasks; cmd_list_move reaches both branches.
     reminder_ckid = _row_get(reminder, "ZCKIDENTIFIER")
     target_list_ckid = target_list_ref.get("objectUUID")
-    if not reminder_ckid:
-        print("Error: cannot move parent with subtasks because it has no stable ReminderKit identifier.", file=sys.stderr)
-        sys.exit(1)
-    if not target_list_ckid:
-        print("Error: cannot move parent with subtasks because the target list has no stable ReminderKit identifier.", file=sys.stderr)
-        sys.exit(1)
-    if not private_available():
-        print(
-            f"Error: moving #{reminder['Z_PK']} with subtasks requires remctl-private. "
-            "Reinstall remctl with ./install.sh, then retry.",
-            file=sys.stderr,
-        )
-        sys.exit(1)
-    child_ids = [_row_get(child, "ZCKIDENTIFIER") for child in child_rows]
-    missing = [child["Z_PK"] for child, child_id in zip(child_rows, child_ids) if not child_id]
-    if missing:
-        print(
-            "Error: cannot move parent with subtasks because these subtasks have no stable ReminderKit identifier: "
-            + ", ".join(f"#{item}" for item in missing),
-            file=sys.stderr,
-        )
-        sys.exit(1)
-    result = private_call({
-        "action": "clone_reminder_tree_to_list",
-        "id": reminder_ckid,
-        "listId": target_list_ckid,
-        "childIds": child_ids,
-    })
-    if not result or result.get("status") != "cloned":
-        message = result.get("message") if isinstance(result, dict) else "private helper failed"
-        print(f"Error: failed to clone reminder tree into target list: {message}", file=sys.stderr)
-        sys.exit(1)
-    new_ckid = result.get("newId")
-    if not new_ckid:
-        print("Error: private helper cloned the reminder but did not return the new reminder identifier.", file=sys.stderr)
-        sys.exit(1)
-    new_row, new_children = wait_for_cloned_reminder_tree(new_ckid, target_list_ref["id"], len(child_rows))
-    if not new_row:
-        print(
-            "Error: cloned reminder tree was not visible in the target list with the expected subtask count. "
-            f"Original #{reminder['Z_PK']} was not deleted.",
-            file=sys.stderr,
-        )
-        sys.exit(1)
-    delete_result = delete_reminder_by_identifier_or_die(reminder)
+    child_rows = subtask_rows_for_parent_move(db, reminder)
+
+    def bail(message):
+        if exit_on_error:
+            print(f"Error: {message}", file=sys.stderr)
+            sys.exit(1)
+        return {"status": "error", "message": message}
+
+    if child_rows:
+        if not reminder_ckid:
+            return bail("cannot move parent with subtasks because it has no stable ReminderKit identifier.")
+        if not target_list_ckid:
+            return bail("cannot move parent with subtasks because the target list has no stable ReminderKit identifier.")
+        if not private_available():
+            return bail(
+                f"moving #{reminder['Z_PK']} with subtasks requires remctl-private. "
+                "Reinstall remctl with ./install.sh, then retry."
+            )
+        child_ids = [_row_get(child, "ZCKIDENTIFIER") for child in child_rows]
+        missing = [child["Z_PK"] for child, child_id in zip(child_rows, child_ids) if not child_id]
+        if missing:
+            return bail(
+                "cannot move parent with subtasks because these subtasks have no stable ReminderKit identifier: "
+                + ", ".join(f"#{item}" for item in missing)
+            )
+        result = private_call({
+            "action": "move_reminder_to_list",
+            "id": reminder_ckid,
+            "listId": target_list_ckid,
+            "childIds": child_ids,
+        })
+        if not result or result.get("status") != "updated":
+            message = result.get("message") if isinstance(result, dict) else "private helper failed"
+            return bail(f"failed to move reminder tree into target list: {message}")
+        return {
+            "status": "updated",
+            "id": reminder["Z_PK"],
+            "list": target_list_ref["title"],
+            "objectUUID": reminder_ckid,
+            "subtasksMoved": len(child_rows),
+            "method": "reminderkit",
+            "private": result,
+        }
+
+    if not (bridge_available() and reminder_ckid and target_list_ckid):
+        return bail("moving a reminder requires remctl-bridge and stable identifiers.")
+    result = bridge_call({"action": "update", "id": reminder_ckid, "listId": target_list_ckid})
+    if not result or result.get("status") != "updated":
+        message = result.get("message") if isinstance(result, dict) else "remctl-bridge failed"
+        return bail(f"failed to move reminder into target list: {message}")
     return {
         "status": "updated",
-        "id": new_row["Z_PK"],
-        "oldId": reminder["Z_PK"],
+        "id": reminder["Z_PK"],
         "list": target_list_ref["title"],
-        "objectUUID": new_ckid,
-        "subtasksMoved": len(new_children),
-        "method": "clone-delete",
-        "private": result,
-        "delete": delete_result,
+        "objectUUID": reminder_ckid,
+        "subtasksMoved": 0,
+        "method": "eventkit",
     }
 
 
@@ -7778,21 +7751,19 @@ def cmd_edit(a):
             if has_other_changes:
                 print(
                     "Error: moving a parent reminder with subtasks cannot currently be combined with other edits. "
-                    "Move it first, then edit the cloned reminder returned by remctl.",
+                    "Move it first, then apply the other edits.",
                     file=sys.stderr,
                 )
                 sys.exit(1)
-            move_result = clone_reminder_tree_to_list_or_die(db, r, target_list_ref, child_rows)
+            move_result = move_reminder_to_list(db, r, target_list_ref)
             if a.json:
                 payload = {
                     "status": "updated",
                     "id": move_result["id"],
-                    "oldId": move_result["oldId"],
                     "list": move_result["list"],
                     "objectUUID": move_result["objectUUID"],
                     "subtasksMoved": move_result["subtasksMoved"],
                     "method": move_result["method"],
-                    "originalDeleted": move_result.get("delete", {}).get("status") == "deleted",
                 }
                 if target_list_ref.get("method") != "exact":
                     payload["resolvedList"] = {
@@ -7803,7 +7774,7 @@ def cmd_edit(a):
                     }
                 print(json.dumps(payload))
             else:
-                print(f"Moved #{move_result['oldId']} -> #{move_result['id']}")
+                print(f"Moved #{move_result['id']}")
                 print(f"List: {safe_display(move_result['list'])}")
                 print(f"Subtasks: {move_result['subtasksMoved']}")
             return
@@ -7830,7 +7801,13 @@ def cmd_edit(a):
         has_changes = False
         if a.title: data["title"] = a.title; has_changes = True
         if target_list_ref:
-            data["list"] = target_list_name
+            # Route by stable calendar identifier so the move lands in the
+            # intended list even when several lists share its title.
+            object_uuid = target_list_ref.get("objectUUID")
+            if object_uuid:
+                data["listId"] = object_uuid
+            else:
+                data["list"] = target_list_name
             has_changes = True
         # Merge url into notes to keep URL-append semantics identical across
         # bridge and AppleScript paths.
@@ -8693,6 +8670,85 @@ def cmd_list_delete(a):
         print(f"Error: Failed to delete list '{target_name}'" + (f": {message}" if message else ""), file=sys.stderr)
         sys.exit(1)
 
+
+def cmd_list_move(a):
+    db = open_db()
+    source_ref = resolve_required_list_target_or_die(
+        db, name=getattr(a, "source", None), list_id=getattr(a, "from_id", None)
+    )
+    dest_ref = resolve_required_list_target_or_die(
+        db, name=getattr(a, "destination", None), list_id=getattr(a, "to_id", None)
+    )
+    if source_ref["id"] == dest_ref["id"]:
+        print("Error: source and destination are the same list.", file=sys.stderr)
+        sys.exit(1)
+    include_completed = not bool(getattr(a, "skip_completed", False))
+    reminders = q_reminders(
+        db,
+        list_pk=source_ref["id"],
+        completed=include_completed,
+        top_level=True,
+        limit=10000,
+    )
+
+    if not getattr(a, "dry_run", False) and not getattr(a, "force", False):
+        title_src = safe_display(source_ref["title"])
+        title_dst = safe_display(dest_ref["title"])
+        count = len(reminders)
+        ans = input(f"Move {count} reminder(s) from '{title_src}' to '{title_dst}'? [y/N] ")
+        if ans.strip().lower() not in ("y", "yes"):
+            print("Aborted.")
+            return
+
+    if getattr(a, "dry_run", False):
+        items = [{"id": r["Z_PK"], "title": safe_display(_row_get(r, "ZTITLE") or "")} for r in reminders]
+        if a.json:
+            print(json.dumps({
+                "status": "dry-run",
+                "from": source_ref["title"],
+                "to": dest_ref["title"],
+                "count": len(items),
+                "reminders": items,
+            }))
+        else:
+            print(f"Would move {len(items)} reminder(s) from {safe_display(source_ref['title'])} to {safe_display(dest_ref['title'])}.")
+            for item in items:
+                print(f"  #{item['id']} {item['title']}")
+        return
+
+    moved, failed = [], []
+    for r in reminders:
+        result = move_reminder_to_list(db, r, dest_ref, exit_on_error=False)
+        if result.get("status") != "updated":
+            failed.append({"id": r["Z_PK"], "title": safe_display(_row_get(r, "ZTITLE") or ""), "error": result.get("message", "")})
+            continue
+        moved.append({
+            "id": result.get("id"),
+            "method": result.get("method"),
+            "subtasksMoved": result.get("subtasksMoved", 0),
+        })
+
+    payload = {
+        "status": "moved" if not failed else "partial",
+        "from": source_ref["title"],
+        "to": dest_ref["title"],
+        "total": len(reminders),
+        "moved": len(moved),
+        "failed": failed,
+        "items": moved,
+    }
+    if a.json:
+        print(json.dumps(payload))
+    else:
+        print(
+            f"Moved {len(moved)}/{len(reminders)} reminder(s) from "
+            f"{safe_display(source_ref['title'])} to {safe_display(dest_ref['title'])}."
+        )
+        for item in failed:
+            print(f"  failed #{item['id']} {item['title']}: {item['error']}")
+    if failed:
+        sys.exit(1)
+
 def cmd_export(a):
     db = open_db()
     list_name = getattr(a, "list", None)
@@ -9193,6 +9249,16 @@ _remctl() {
                 '--json[JSON output]'
             return
             ;;
+        list-move)
+            _arguments \
+                '--from-id[Source list by stable numeric ID]:id:' \
+                '--to-id[Destination list by stable numeric ID]:id:' \
+                '--skip-completed[Skip completed reminders]' \
+                '--dry-run[List reminders that would move]' \
+                '--force[Skip confirmation prompt]' \
+                '--json[JSON output]'
+            return
+            ;;
     esac
     _describe 'command' commands
 }
@@ -9203,7 +9269,7 @@ BASH_COMPLETION = '''_remctl() {
     local cur prev commands
     cur="${COMP_WORDS[COMP_CWORD]}"
     prev="${COMP_WORDS[COMP_CWORD-1]}"
-    commands="lists groups group-info group-create group-edit group-delete smart-lists templates template-info show add done undone edit delete search today upcoming overdue flagged urgent flag unflag tags subtasks info sections sharees stats link open export import list-symbols list-create smart-list-create smart-list-edit smart-list-delete template-create template-apply template-delete list-edit list-pin list-unpin list-rename list-delete onboard doctor setup permissions completion"
+    commands="lists groups group-info group-create group-edit group-delete smart-lists templates template-info show add done undone edit delete search today upcoming overdue flagged urgent flag unflag tags subtasks info sections sharees stats link open export import list-symbols list-create smart-list-create smart-list-edit smart-list-delete template-create template-apply template-delete list-edit list-pin list-unpin list-rename list-delete list-move onboard doctor setup permissions completion"
 
     local cmd="${COMP_WORDS[1]}"
     if [ "$cmd" = "add" ]; then
@@ -9293,6 +9359,9 @@ BASH_COMPLETION = '''_remctl() {
     elif [ "$cmd" = "list-delete" ]; then
         COMPREPLY=( $(compgen -W "--list-id --force --json" -- "$cur") )
         return
+    elif [ "$cmd" = "list-move" ]; then
+        COMPREPLY=( $(compgen -W "--from-id --to-id --skip-completed --dry-run --force --json" -- "$cur") )
+        return
     elif [ $COMP_CWORD -eq 1 ]; then
         COMPREPLY=( $(compgen -W "$commands" -- "$cur") )
     fi
@@ -9347,6 +9416,7 @@ complete -c remctl -n "__fish_use_subcommand" -a list-pin -d "Pin a list or smar
 complete -c remctl -n "__fish_use_subcommand" -a list-unpin -d "Unpin a list or smart list in Reminders"
 complete -c remctl -n "__fish_use_subcommand" -a list-rename -d "Rename a list"
 complete -c remctl -n "__fish_use_subcommand" -a list-delete -d "Delete a list"
+complete -c remctl -n "__fish_use_subcommand" -a list-move -d "Move every reminder from one list to another"
 complete -c remctl -n "__fish_use_subcommand" -a onboard -d "Prompt for macOS permissions and verify readiness"
 complete -c remctl -n "__fish_use_subcommand" -a doctor -d "Diagnose setup and runtime issues"
 complete -c remctl -n "__fish_use_subcommand" -a setup -d "Install shell completions"
@@ -10541,8 +10611,8 @@ def main():
         formatter_class=HelpFormatter,
     )
     c.add_argument("id", type=int); c.add_argument("--title")
-    c.add_argument("-l", "--list", help="Move to a list by name; parent reminders with subtasks use a verified clone-delete fallback")
-    c.add_argument("--list-id", type=int, help="Move to a list by stable numeric ID; parent reminders with subtasks use a verified clone-delete fallback")
+    c.add_argument("-l", "--list", help="Move to a list by name; parent reminders with subtasks move through ReminderKit")
+    c.add_argument("--list-id", type=int, help="Move to a list by stable numeric ID; parent reminders with subtasks move through ReminderKit")
     c.add_argument("-n", "--notes"); c.add_argument("-d", "--due", help="YYYY-MM-DD or 'clear'")
     c.add_argument("-p", "--priority")
     c.add_argument("--url", help="URL; appended to notes normally, synced web rich link attachment with --private")
@@ -10819,6 +10889,16 @@ def main():
     c.add_argument("--list-id", type=int, help="Delete a list by stable numeric ID")
     c.add_argument("--force", action="store_true"); js(c)
 
+    c = sub.add_parser("list-move", help="Move every reminder from one list to another")
+    c.add_argument("source", nargs="?", help="Source list name")
+    c.add_argument("destination", nargs="?", help="Destination list name")
+    c.add_argument("--from-id", dest="from_id", type=int, help="Source list by stable numeric ID")
+    c.add_argument("--to-id", dest="to_id", type=int, help="Destination list by stable numeric ID")
+    c.add_argument("--skip-completed", action="store_true", help="Skip completed reminders (default: include them)")
+    c.add_argument("--dry-run", action="store_true", help="List the reminders that would move without moving them")
+    c.add_argument("--force", action="store_true", help="Skip confirmation prompt")
+    js(c)
+
     c = sub.add_parser("export", help="Export reminders")
     c.add_argument("-l", "--list", help="Export only this list")
     c.add_argument("--list-id", type=int, help="Export only this list by stable numeric ID")
@@ -11014,6 +11094,7 @@ def main():
         "list-unpin": cmd_list_unpin,
         "list-rename": cmd_list_rename,
         "list-delete": cmd_list_delete,
+        "list-move": cmd_list_move,
         "export": cmd_export,
         "import": cmd_import,
         "onboard": cmd_onboard,

@@ -10,6 +10,7 @@ struct Command: Decodable {
     let title: String?
     let newTitle: String?
     let list: String?
+    let listId: String?
     let due: String?
     let priority: Int?
     let notes: String?
@@ -216,7 +217,13 @@ func findList(_ store: EKEventStore, name: String) -> EKCalendar {
 func applyFields(_ reminder: EKReminder, _ cmd: Command, store: EKEventStore) {
     if let t = cmd.title { reminder.title = t }
 
-    if let list = cmd.list {
+    // Prefer the stable id so the move lands in the intended list when titles collide.
+    if let listId = cmd.listId {
+        guard let cal = store.calendar(withIdentifier: listId) else {
+            fail("List not found: \(listId)")
+        }
+        reminder.calendar = cal
+    } else if let list = cmd.list {
         reminder.calendar = findList(store, name: list)
     }
 

@@ -160,7 +160,7 @@ Private rich URLs require public `http` or `https` hosts. RemCTL rejects loopbac
 | Surface | Command | Private? | Notes |
 | --- | --- | --- | --- |
 | Title, notes, due date, priority | `edit --title`, `-n`, `-d`, `-p` | No | EventKit bridge with AppleScript fallback for ordinary fields |
-| Move to another list | `edit -l LIST` or `edit --list-id ID` | No | EventKit bridge for ordinary reminders; parent reminders with subtasks use a verified ReminderKit clone-delete fallback and return a new numeric `id` plus `oldId` |
+| Move to another list | `edit -l LIST` or `edit --list-id ID` | No | EventKit bridge for ordinary reminders; parent reminders with subtasks move through ReminderKit and keep their numeric `id` |
 | Recurrence and normal alarms | `edit --recurrence`, `edit --alarm` | No | EventKit bridge only; verify in `info --json` |
 | Notes URL fallback | `edit --url URL` | No | Appends the URL to notes, not a rich attachment |
 | Rich web URL attachment and real tags | `edit --private --url URL -t tags` | Yes | Additive; does not remove or replace existing rich links |
@@ -217,7 +217,7 @@ remctl delete 23880 --force
 
 `done --date WHEN` records an explicit completion date instead of "now". It also works on an already-completed reminder to correct the stored completion date. `WHEN` must be an absolute `YYYY-MM-DD` or `YYYY-MM-DD HH:MM`; recurring reminders reject `--date` because plain completion advances the series and EventKit discards a manually supplied completion date.
 
-For parent reminders with subtasks, Reminders rejects an in-place EventKit list move. RemCTL handles that shape by cloning the parent and subtasks into the destination list, verifying the cloned subtask count, then deleting the original. JSON output includes `method: "clone-delete"`, `oldId`, the new `id`, and `subtasksMoved`. Move the parent first, then apply unrelated title/notes/due/private edits to the returned ID.
+For parent reminders with subtasks, Reminders rejects an in-place EventKit list move. RemCTL moves that shape through ReminderKit, reassigning the parent and each subtask to the destination list with `REMReminderChangeItem.setListID:` so they keep their numeric ids and stay nested. JSON output includes `method: "reminderkit"`, the unchanged `id`, and `subtasksMoved`. Move the parent first, then apply unrelated title/notes/due/private edits.
 
 ## Lists
 
@@ -246,9 +246,16 @@ remctl list-rename "Project X" "Project Y"
 remctl list-rename --list-id 144 --new-name "Project Y"
 remctl list-delete "Project Y" --force
 remctl list-delete --list-id 144 --force
+remctl list-move "Inbox" "Project X"
+remctl list-move --from-id 12 --to-id 144
+remctl list-move "Inbox" "Project X" --skip-completed
+remctl list-move "Inbox" "Project X" --force
+remctl list-move "Inbox" "Project X" --dry-run --json
 ```
 
 `list-create --color NAME` uses EventKit and supports Reminders color names such as `red`, `orange`, `yellow`, `green`, `blue`, `purple`, `brown`, `gray`, and `cyan`.
+
+`list-move` moves every top-level reminder from one list to another. It resolves both lists by exact name or `--from-id`/`--to-id` and routes each move by the destination's stable calendar identifier, so reminders land in the intended list even when several lists share a title. Plain reminders move through the EventKit bridge and parents with subtasks move through ReminderKit; either way reminders keep their numeric id (the same path `edit ID -l LIST` uses). Completed reminders are included by default; pass `--skip-completed` to exclude them. The command covers up to 10,000 top-level reminders per invocation, matching export's limit. `--dry-run` lists what would move, `--force` skips the confirmation prompt, and per-reminder failures are collected in the JSON `failed` array instead of aborting the run.
 
 List symbols, emoji badges, Groceries mode, and pin state are private Reminders metadata and require `--private`. `list-edit` is the exact-target appearance and list-type editor; `list-pin` and `list-unpin` toggle the Reminders.app sidebar pin state for regular lists and smart lists. Use `--list-id` or `--smart-list-id` when duplicate or normalized names could match more than one target. With `--private`, `--color` also accepts `#RRGGBB`.
 

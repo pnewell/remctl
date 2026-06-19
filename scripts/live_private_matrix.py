@@ -184,6 +184,16 @@ class LiveMatrix:
             ],
             "Unsupported smart list filter shape",
         )
+        self.expect_fail(
+            "guardrail list-move same source and destination",
+            ["list-move", f"{self.prefix} Same", f"{self.prefix} Same", "--force", "--json"],
+            "source and destination are the same list",
+        )
+        self.expect_fail(
+            "guardrail list-move unknown source",
+            ["list-move", "--from-id", "99999999", "--to-id", "99999998", "--force", "--json"],
+            "not found",
+        )
 
     def run_lists_and_reminders(self):
         standard = f"{self.prefix} Standard"
@@ -419,6 +429,30 @@ class LiveMatrix:
         self.assert_true(items is not None, "template-applied list is not readable")
         self.record("template-apply", "passed", list_name)
 
+    def run_list_moves(self):
+        src = f"{self.prefix} MoveSrc"
+        dst = f"{self.prefix} MoveDst"
+        self.create_list(src, "--private", "--color", "blue")
+        self.create_list(dst, "--private", "--color", "green")
+        self.create_reminder(f"{self.prefix} Plain", "-l", src)
+        parent = self.create_reminder(f"{self.prefix} Parent", "-l", src)
+        self.json_command(["edit", str(int(parent["numericId"])), "--private", "--subtask", f"{self.prefix} Child", "--json"])
+
+        moved = self.json_command(["list-move", src, dst, "--force", "--json"])
+        self.assert_true(moved.get("status") == "moved", f"list-move did not report moved: {moved}")
+        self.assert_true(moved.get("total") == 2 and moved.get("moved") == 2, f"list-move moved the wrong count: {moved}")
+        methods = sorted(item.get("method") for item in moved.get("items", []))
+        self.assert_true(methods == ["eventkit", "reminderkit"], f"list-move used unexpected methods: {methods}")
+
+        moved_titles = {f"{self.prefix} Plain", f"{self.prefix} Parent"}
+        landed = self.retry(lambda: moved_titles.issubset({item.get("title") for item in self.show_list(dst)}))
+        self.assert_true(bool(landed), "moved reminders did not appear in the destination list")
+        self.assert_true(self.retry(lambda: self.show_list(src) == []), "source list was not emptied by list-move")
+        for item in self.show_list(dst):
+            if item.get("id"):
+                self.created_reminders.add(int(item["id"]))
+        self.record("list-move bulk move", "passed", f"{src} -> {dst}")
+
     def cleanup(self):
         if self.keep:
             return
@@ -455,6 +489,7 @@ class LiveMatrix:
         source_list = self.run_lists_and_reminders()
         self.run_smart_lists(source_list)
         self.run_templates(source_list)
+        self.run_list_moves()
 
 
 def main() -> int:
