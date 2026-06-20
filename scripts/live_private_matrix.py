@@ -224,6 +224,20 @@ class LiveMatrix:
         self.assert_true(bool(unpinned), "list-unpin did not persist")
         self.record("list-pin/list-unpin regular list", "passed", renamed)
 
+        self.json_command(["list-sort", renamed, "--by", "priority", "--private", "--json"])
+        sorted_list = self.retry(lambda: self.list_named(renamed) and self.list_named(renamed).get("sortingStyle") == "priority_desc")
+        self.assert_true(bool(sorted_list), "list-sort did not persist")
+        self.record("list-sort regular list", "passed", renamed)
+
+        self.json_command(["list-sort", renamed, "--by", "priority", "--order", "asc", "--private", "--json"])
+        sorted_asc = self.retry(lambda: self.list_named(renamed) and self.list_named(renamed).get("sortingStyle") == "priority_asc")
+        self.assert_true(bool(sorted_asc), "list-sort --order asc did not persist")
+        self.record("list-sort --order asc regular list", "passed", renamed)
+
+        default_payload = self.json_command(["list-sort", renamed, "--by", "default", "--private", "--json"])
+        self.assert_true(default_payload.get("sortingStyle") == "default", "list-sort --by default did not report default")
+        self.record("list-sort --by default regular list", "passed", renamed)
+
         grocery_row = self.create_list(grocery, "--private", "--groceries", "--grocery-locale", "en_US")
         self.assert_true(grocery_row.get("isGroceries"), "Groceries metadata did not persist")
         self.assert_true(grocery_row.get("grocery", {}).get("locale") == "en_US", "Groceries locale did not persist")
@@ -346,6 +360,47 @@ class LiveMatrix:
         self.assert_true(not cleared.get("earlyReminder"), "Early Reminder clear did not persist")
         self.record("edit private early reminder clear", "passed", str(rid))
 
+        today_type = "com.apple.reminders.smartlist.today"
+        today_row = next(
+            (row for row in self.smart_lists() if row.get("type") == today_type),
+            None,
+        )
+        if today_row:
+            today_id = str(today_row["id"])
+            orig_sort = today_row.get("sortingStyle") or "default"
+            orig_pinned = bool(today_row.get("pinned"))
+            try:
+                sort_payload = self.json_command([
+                    "list-sort", "--smart-list-id", today_id,
+                    "--by", "priority", "--private", "--json",
+                ])
+                self.assert_true(sort_payload.get("sortingStyle") == "priority_desc", "built-in smart list sort did not report priority_desc")
+                self.record("list-sort built-in smart list", "passed", "Today priority")
+
+                pin_payload = self.json_command([
+                    "list-pin", "--smart-list-id", today_id, "--private", "--json",
+                ])
+                self.assert_true(pin_payload.get("status") == "pinned", "built-in smart list pin did not report pinned")
+                self.record("list-pin built-in smart list", "passed", "Today")
+            finally:
+                style_to_by = {
+                    "manual": "manual", "default": "default", "priority": "priority",
+                    "displayDate": "due-date", "title": "title", "creationDate": "creation-date",
+                }
+                base, _, order = orig_sort.partition("_")
+                restore_by = style_to_by.get(base, "default")
+                restore_cmd = [
+                    "list-sort", "--smart-list-id", today_id,
+                    "--by", restore_by, "--private", "--json",
+                ]
+                if order in ("desc", "asc"):
+                    restore_cmd[5:5] = ["--order", order]
+                self.json_command(restore_cmd)
+                if not orig_pinned:
+                    self.json_command([
+                        "list-unpin", "--smart-list-id", today_id, "--private", "--json",
+                    ])
+
         return renamed
 
     def run_smart_lists(self, include_list: str):
@@ -400,6 +455,11 @@ class LiveMatrix:
         unpinned = self.retry(lambda: self.smart_named(editable) and not self.smart_named(editable).get("pinned"))
         self.assert_true(bool(unpinned), "smart-list unpin did not persist")
         self.record("list-pin/list-unpin smart list", "passed", editable)
+
+        self.json_command(["list-sort", "--smart-list-id", str(edited["id"]), "--by", "due-date", "--private", "--json"])
+        sorted_smart = self.retry(lambda: self.smart_named(editable) and self.smart_named(editable).get("sortingStyle") == "displayDate_asc")
+        self.assert_true(bool(sorted_smart), "smart-list sort did not persist")
+        self.record("list-sort smart list", "passed", editable)
 
     def run_templates(self, source_list: str):
         name = f"{self.prefix} Template"

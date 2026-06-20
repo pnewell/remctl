@@ -318,6 +318,29 @@ LIST_COLOR_MAP = {
 
 HEX_COLOR_RE = re.compile(r"^#[0-9a-fA-F]{6}$")
 
+SORT_STYLE_MAP = {
+    "manual": "manual",
+    "default": "default",
+    "priority": "priority",
+    "due-date": "displayDate",
+    "title": "title",
+    "creation-date": "creationDate",
+}
+
+SORT_DEFAULT_ORDER = {
+    "priority": "desc",
+    "due-date": "asc",
+    "title": "asc",
+    "creation-date": "asc",
+}
+
+
+def resolve_sorting_style(by, order):
+    base = SORT_STYLE_MAP[by]
+    if by not in SORT_DEFAULT_ORDER:
+        return base
+    return f"{base}_{order or SORT_DEFAULT_ORDER[by]}"
+
 OFFICIAL_LIST_SYMBOLS = [
     ("default", "ListBadgeDefault", "☺"),
     ("bookmarks1", "ListBadgeBookmarks1", "☷"),
@@ -561,6 +584,7 @@ def list_select_columns(db):
         "ZDADISPLAYORDER",
         "ZISPINNEDBYCURRENTUSER",
         "ZPINNEDDATE",
+        "ZSORTINGSTYLE",
         "ZSHOULDCATEGORIZEGROCERYITEMS",
         "ZSHOULDAUTOCATEGORIZEITEMS",
         "ZSHOULDSUGGESTCONVERSIONTOGROCERYLIST",
@@ -649,7 +673,7 @@ def q_smart_lists(db):
         "ZEFFECTIVEMINIMUMSUPPORTEDAPPVERSION",
     ]
     columns.extend(column for column in ("ZBADGEEMBLEM", "ZCOLOR") if column in table_columns)
-    columns.extend(column for column in ("ZISPINNEDBYCURRENTUSER", "ZPINNEDDATE") if column in table_columns)
+    columns.extend(column for column in ("ZISPINNEDBYCURRENTUSER", "ZPINNEDDATE", "ZSORTINGSTYLE") if column in table_columns)
     return db.execute(
         f"SELECT {', '.join(columns)} FROM ZREMCDBASELIST "
         "WHERE ZMARKEDFORDELETION = 0 AND (Z_ENT = 4 OR ZSMARTLISTTYPE IS NOT NULL) "
@@ -957,6 +981,8 @@ def list_to_dict(row):
         item["pinned"] = bool(row["ZISPINNEDBYCURRENTUSER"])
     if _row_has_key(row, "ZPINNEDDATE") and row["ZPINNEDDATE"] is not None:
         item["pinnedDate"] = row["ZPINNEDDATE"]
+    if _row_has_key(row, "ZSORTINGSTYLE") and row["ZSORTINGSTYLE"]:
+        item["sortingStyle"] = row["ZSORTINGSTYLE"]
     return item
 
 
@@ -1584,6 +1610,14 @@ def q_smart_list_ckid(db, smart_list_pk):
         (smart_list_pk,),
     ).fetchone()
     return row["ZCKIDENTIFIER"] if row and row["ZCKIDENTIFIER"] else None
+
+def q_smart_list_type(db, smart_list_pk):
+    row = db.execute(
+        "SELECT ZSMARTLISTTYPE FROM ZREMCDBASELIST "
+        "WHERE Z_PK = ? AND ZMARKEDFORDELETION = 0 AND (Z_ENT = 4 OR ZSMARTLISTTYPE IS NOT NULL)",
+        (smart_list_pk,),
+    ).fetchone()
+    return row["ZSMARTLISTTYPE"] if row and row["ZSMARTLISTTYPE"] else None
 
 def q_list_exact_name_count(db, name):
     row = db.execute(
@@ -4188,11 +4222,49 @@ def apply_private_group_delete(db, group_ref, a):
 
 def apply_private_smart_list_pinned(db, smart_list_pk, a, pinned):
     require_private_metadata(a)
-    ckid = q_smart_list_ckid(db, smart_list_pk)
+    smart_list_type = q_smart_list_type(db, smart_list_pk)
+    if smart_list_type and smart_list_type != CUSTOM_SMART_LIST_TYPE:
+        payload = {"action": "set_smart_list_pinned", "smartListType": smart_list_type, "pinned": bool(pinned)}
+    else:
+        ckid = q_smart_list_ckid(db, smart_list_pk)
+        if not ckid:
+            print("Error: target smart list has no stable CloudKit identifier.", file=sys.stderr)
+            sys.exit(1)
+        payload = {"action": "set_smart_list_pinned", "smartListId": ckid, "pinned": bool(pinned)}
+    result = private_call(payload)
+    if result and result.get("status") == "updated":
+        return result
+    message = result.get("message") if isinstance(result, dict) else "private helper failed"
+    print(f"Error: {message}", file=sys.stderr)
+    sys.exit(1)
+
+
+def apply_private_list_sort(db, list_pk, a, sorting_style):
+    require_private_metadata(a)
+    ckid = q_list_ckid(db, list_pk)
     if not ckid:
-        print("Error: target smart list has no stable CloudKit identifier.", file=sys.stderr)
+        print("Error: target list has no stable CloudKit identifier.", file=sys.stderr)
         sys.exit(1)
-    result = private_call({"action": "set_smart_list_pinned", "smartListId": ckid, "pinned": bool(pinned)})
+    result = private_call({"action": "set_list_sort", "listId": ckid, "sortingStyle": sorting_style})
+    if result and result.get("status") == "updated":
+        return result
+    message = result.get("message") if isinstance(result, dict) else "private helper failed"
+    print(f"Error: {message}", file=sys.stderr)
+    sys.exit(1)
+
+
+def apply_private_smart_list_sort(db, smart_list_pk, a, sorting_style):
+    require_private_metadata(a)
+    smart_list_type = q_smart_list_type(db, smart_list_pk)
+    if smart_list_type and smart_list_type != CUSTOM_SMART_LIST_TYPE:
+        payload = {"action": "set_smart_list_sort", "smartListType": smart_list_type, "sortingStyle": sorting_style}
+    else:
+        ckid = q_smart_list_ckid(db, smart_list_pk)
+        if not ckid:
+            print("Error: target smart list has no stable CloudKit identifier.", file=sys.stderr)
+            sys.exit(1)
+        payload = {"action": "set_smart_list_sort", "smartListId": ckid, "sortingStyle": sorting_style}
+    result = private_call(payload)
     if result and result.get("status") == "updated":
         return result
     message = result.get("message") if isinstance(result, dict) else "private helper failed"
@@ -5755,7 +5827,14 @@ def smart_list_to_dict(row):
         payload["minimumSupportedVersion"] = minimum_version
     if effective_minimum_version is not None:
         payload["effectiveMinimumSupportedVersion"] = effective_minimum_version
-    if _row_has_key(row, "ZISPINNEDBYCURRENTUSER") or pinned_date is not None:
+    is_builtin = bool(row["ZSMARTLISTTYPE"]) and row["ZSMARTLISTTYPE"] != CUSTOM_SMART_LIST_TYPE
+    if is_builtin:
+        # Built-in smart lists reuse ZPINNEDDATE for sidebar visibility: NULL means
+        # "shown in sidebar" (the default), any non-NULL value (positive timestamp
+        # or the distantPast sentinel) means "hidden". This is the inverse of the
+        # custom-smart-list pin convention, so report user-facing pin state here.
+        payload["pinned"] = pinned_date is None
+    elif _row_has_key(row, "ZISPINNEDBYCURRENTUSER") or pinned_date is not None:
         is_pinned = bool(_row_get(row, "ZISPINNEDBYCURRENTUSER", False))
         if not is_pinned and pinned_date is not None:
             try:
@@ -5765,6 +5844,8 @@ def smart_list_to_dict(row):
         payload["pinned"] = is_pinned
     if pinned_date is not None:
         payload["pinnedDate"] = pinned_date
+    if _row_has_key(row, "ZSORTINGSTYLE") and row["ZSORTINGSTYLE"]:
+        payload["sortingStyle"] = row["ZSORTINGSTYLE"]
     if decoded["summary"] is not None:
         payload["filter"] = decoded["summary"]
     if decoded["encoding"]:
@@ -8633,6 +8714,68 @@ def cmd_list_unpin(a):
     _cmd_list_pin_state(a, False)
 
 
+def cmd_list_sort(a):
+    if getattr(a, "list_id", None) is not None and getattr(a, "smart_list_id", None) is not None:
+        print("Error: pass either --list-id or --smart-list-id, not both.", file=sys.stderr)
+        sys.exit(1)
+    if not (getattr(a, "name", None) or getattr(a, "list_id", None) is not None or getattr(a, "smart_list_id", None) is not None):
+        print("Error: pass a list/smart-list name, --list-id, or --smart-list-id.", file=sys.stderr)
+        sys.exit(1)
+    require_private_metadata(a)
+    sorting_style = resolve_sorting_style(a.by, getattr(a, "order", None))
+    db = open_db()
+    smart_list_id = getattr(a, "smart_list_id", None)
+    name = getattr(a, "name", None)
+    if smart_list_id is not None:
+        target_kind = "smart-list"
+        target_ref = resolve_smart_list_or_die(db, smart_list_id=smart_list_id)
+        result = apply_private_smart_list_sort(db, target_ref["id"], a, sorting_style)
+    elif getattr(a, "list_id", None) is not None:
+        target_kind = "list"
+        target_ref = resolve_list_or_die(db, list_id=a.list_id)
+        result = apply_private_list_sort(db, target_ref["id"], a, sorting_style)
+    else:
+        list_ref = resolve_list_ref(db, name=name)
+        smart_ref = resolve_smart_list_ref(db, name=name)
+        list_ok = list_ref and not list_ref.get("error")
+        smart_ok = smart_ref and not smart_ref.get("error")
+        if list_ref and list_ref.get("error"):
+            _print_list_resolution_error(name, list_ref)
+            sys.exit(1)
+        if smart_ref and smart_ref.get("error"):
+            _print_smart_list_resolution_error(name, smart_ref)
+            sys.exit(1)
+        if list_ok and smart_ok:
+            print(
+                f"Error: {name!r} matches both a list and a smart list. Use --list-id or --smart-list-id.",
+                file=sys.stderr,
+            )
+            sys.exit(1)
+        if list_ok:
+            target_kind = "list"
+            target_ref = list_ref
+            result = apply_private_list_sort(db, target_ref["id"], a, sorting_style)
+        elif smart_ok:
+            target_kind = "smart-list"
+            target_ref = smart_ref
+            result = apply_private_smart_list_sort(db, target_ref["id"], a, sorting_style)
+        else:
+            print(f"Error: list or smart list not found: {name}", file=sys.stderr)
+            sys.exit(1)
+    if a.json:
+        print(json.dumps({
+            "status": "updated",
+            "kind": target_kind,
+            "id": target_ref["id"],
+            "name": target_ref["title"],
+            "sortingStyle": sorting_style,
+            "private": result,
+        }, ensure_ascii=False))
+    else:
+        label = "smart list" if target_kind == "smart-list" else "list"
+        print(f"Sorted {label}: {safe_display(target_ref['title'])} by {a.by}")
+
+
 def cmd_list_rename(a):
     new_name = getattr(a, "new_name_option", None) or getattr(a, "new_name", None)
     if getattr(a, "new_name_option", None) and getattr(a, "new_name", None):
@@ -8856,6 +8999,7 @@ _remctl() {
         'list-edit:Edit private list appearance'
         'list-pin:Pin a list or smart list in Reminders'
         'list-unpin:Unpin a list or smart list in Reminders'
+        'list-sort:Set the sort order of a list or smart list'
         'list-rename:Rename a list'
         'list-delete:Delete a list'
         'onboard:Prompt for macOS permissions and verify readiness'
@@ -9186,6 +9330,16 @@ _remctl() {
                 '--json[JSON output]'
             return
             ;;
+        list-sort)
+            _arguments \
+                '--private[Use private ReminderKit sort writes]' \
+                '--list-id[Sort list by stable numeric ID]:id:' \
+                '--smart-list-id[Sort custom smart list by stable numeric ID]:id:' \
+                '--by[Sort field]:field:(manual default priority due-date title creation-date)' \
+                '--order[Sort order]:order:(desc asc)' \
+                '--json[JSON output]'
+            return
+            ;;
         list-delete)
             _arguments \
                 '--list-id[Delete list by stable numeric ID]:id:' \
@@ -9203,7 +9357,7 @@ BASH_COMPLETION = '''_remctl() {
     local cur prev commands
     cur="${COMP_WORDS[COMP_CWORD]}"
     prev="${COMP_WORDS[COMP_CWORD-1]}"
-    commands="lists groups group-info group-create group-edit group-delete smart-lists templates template-info show add done undone edit delete search today upcoming overdue flagged urgent flag unflag tags subtasks info sections sharees stats link open export import list-symbols list-create smart-list-create smart-list-edit smart-list-delete template-create template-apply template-delete list-edit list-pin list-unpin list-rename list-delete onboard doctor setup permissions completion"
+    commands="lists groups group-info group-create group-edit group-delete smart-lists templates template-info show add done undone edit delete search today upcoming overdue flagged urgent flag unflag tags subtasks info sections sharees stats link open export import list-symbols list-create smart-list-create smart-list-edit smart-list-delete template-create template-apply template-delete list-edit list-pin list-unpin list-sort list-rename list-delete onboard doctor setup permissions completion"
 
     local cmd="${COMP_WORDS[1]}"
     if [ "$cmd" = "add" ]; then
@@ -9287,6 +9441,9 @@ BASH_COMPLETION = '''_remctl() {
     elif [ "$cmd" = "list-pin" ] || [ "$cmd" = "list-unpin" ]; then
         COMPREPLY=( $(compgen -W "--private --list-id --smart-list-id --json" -- "$cur") )
         return
+    elif [ "$cmd" = "list-sort" ]; then
+        COMPREPLY=( $(compgen -W "--private --list-id --smart-list-id --by --order --json" -- "$cur") )
+        return
     elif [ "$cmd" = "list-rename" ]; then
         COMPREPLY=( $(compgen -W "--list-id --new-name --json" -- "$cur") )
         return
@@ -9345,6 +9502,7 @@ complete -c remctl -n "__fish_use_subcommand" -a template-delete -d "Delete a sa
 complete -c remctl -n "__fish_use_subcommand" -a list-edit -d "Edit private list appearance"
 complete -c remctl -n "__fish_use_subcommand" -a list-pin -d "Pin a list or smart list in Reminders"
 complete -c remctl -n "__fish_use_subcommand" -a list-unpin -d "Unpin a list or smart list in Reminders"
+complete -c remctl -n "__fish_use_subcommand" -a list-sort -d "Set the sort order of a list or smart list"
 complete -c remctl -n "__fish_use_subcommand" -a list-rename -d "Rename a list"
 complete -c remctl -n "__fish_use_subcommand" -a list-delete -d "Delete a list"
 complete -c remctl -n "__fish_use_subcommand" -a onboard -d "Prompt for macOS permissions and verify readiness"
@@ -9471,6 +9629,12 @@ complete -c remctl -n "__fish_seen_subcommand_from list-pin list-unpin" -l priva
 complete -c remctl -n "__fish_seen_subcommand_from list-pin list-unpin" -l list-id -d "Target list by stable numeric ID" -r
 complete -c remctl -n "__fish_seen_subcommand_from list-pin list-unpin" -l smart-list-id -d "Target smart list by stable numeric ID" -r
 complete -c remctl -n "__fish_seen_subcommand_from list-pin list-unpin" -l json -d "JSON output"
+complete -c remctl -n "__fish_seen_subcommand_from list-sort" -l private -d "Use private ReminderKit sort writes"
+complete -c remctl -n "__fish_seen_subcommand_from list-sort" -l list-id -d "Sort list by stable numeric ID" -r
+complete -c remctl -n "__fish_seen_subcommand_from list-sort" -l smart-list-id -d "Sort smart list by stable numeric ID" -r
+complete -c remctl -n "__fish_seen_subcommand_from list-sort" -l by -d "Sort field" -r -a "manual default priority due-date title creation-date"
+complete -c remctl -n "__fish_seen_subcommand_from list-sort" -l order -d "Sort order" -r -a "desc asc"
+complete -c remctl -n "__fish_seen_subcommand_from list-sort" -l json -d "JSON output"
 complete -c remctl -n "__fish_seen_subcommand_from list-rename" -l list-id -d "Rename list by stable numeric ID" -r
 complete -c remctl -n "__fish_seen_subcommand_from list-rename" -l new-name -d "New list name" -r
 complete -c remctl -n "__fish_seen_subcommand_from list-delete" -l list-id -d "Delete list by stable numeric ID" -r
@@ -10807,6 +10971,15 @@ def main():
     c.add_argument("--private", action="store_true", help="Required for private ReminderKit list pinning")
     js(c)
 
+    c = sub.add_parser("list-sort", help="Set the sort order of a list or smart list")
+    c.add_argument("name", nargs="?", help="List or smart-list name to sort")
+    c.add_argument("--list-id", type=int, help="Sort a list by stable numeric ID")
+    c.add_argument("--smart-list-id", type=int, help="Sort a smart list by stable numeric ID")
+    c.add_argument("--by", required=True, choices=["manual", "default", "priority", "due-date", "title", "creation-date"], help="Sort field")
+    c.add_argument("--order", choices=["desc", "asc"], default=None, help="Sort order; defaults match Reminders.app (priority uses desc; title, due-date, and creation-date use asc); ignored for manual and default")
+    c.add_argument("--private", action="store_true", help="Required for private ReminderKit sort writes")
+    js(c)
+
     c = sub.add_parser("list-rename", help="Rename a list (bridge only)")
     c.add_argument("name", nargs="?", help="List name to rename")
     c.add_argument("new_name", nargs="?", help="New list name")
@@ -11012,6 +11185,7 @@ def main():
         "list-edit": cmd_list_edit,
         "list-pin": cmd_list_pin,
         "list-unpin": cmd_list_unpin,
+        "list-sort": cmd_list_sort,
         "list-rename": cmd_list_rename,
         "list-delete": cmd_list_delete,
         "export": cmd_export,

@@ -30,6 +30,7 @@ Verified on macOS/iCloud sync:
 - location alarms: `edit ID --private --location-title "Apple Park" --latitude 37.3349 --longitude -122.0090` (guarded by `--private`, saved through `remctl-bridge`)
 - list appearance metadata: `list-create "Projects" --private --symbol education3`, `list-edit Projects --private --color '#FF8D28' --emoji 📌`
 - list and smart-list pin state: `list-pin "Project X" --private`, `list-pin "Flagged" --private`, `list-unpin --smart-list-id 4 --private`
+- list and custom smart-list sort order: `list-sort Projects --by priority --private`, `list-sort --smart-list-id 4 --by due-date --private`, `list-sort Projects --by title --order desc --private`
 - list groups: `group-create "Writing" --private --add-list Editorial`, `list-create "Ideas" --private --group Writing`, `group-edit "Writing" --private --add-list Ideas --remove-list Socials`, `group-edit "Writing" --private --move-list Ideas --last`, and `group-delete "Writing" --private --force`
 - custom smart lists with verified materializing Reminders filters: `smart-list-create "Flagged Review" --private --flagged`, `smart-list-create "Priority or Today" --private --match any --priority high,medium --date today`, `smart-list-create "Projects Today" --private --include-list Projects --date today --date-today-include-past-due`, and exact custom smart-list cleanup via `smart-list-delete "Flagged Review" --private --force`
 - Reminders templates: `template-create "Packing Template" --from-list Packing --private`, `template-apply "Packing Template" --private`, and exact cleanup via `template-delete "Packing Template" --private --force`
@@ -126,6 +127,9 @@ remctl list-pin "Project X" --private
 remctl list-pin "Flagged" --private
 remctl list-unpin --list-id 144 --private
 remctl list-unpin --smart-list-id 4 --private
+remctl list-sort Projects --by priority --private
+remctl list-sort --smart-list-id 4 --by due-date --private
+remctl list-sort Projects --by title --order desc --private
 ```
 
 List colors and badge emblems were reverse-engineered from `ZREMCDBASELIST`. `ZCOLOR` stores a `REMColor` keyed archive. `ZBADGEEMBLEM` stores either an emoji JSON string or a private Reminders emblem name. `list-symbols` prints the 71 official emblem names bundled in RemindersUICore; the terminal glyph column is approximate. Use `list-symbols --preview` or `list-symbols --html PATH` for a native-asset HTML contact sheet with interactive official color swatches. RemCTL writes those values through ReminderKit change items, not by editing the database.
@@ -137,8 +141,10 @@ Important limits:
 - `--symbol` writes one of the official Reminders emblem names printed by `list-symbols`. Reminders' own picker uses private names such as `education3`; arbitrary SF Symbol strings are rejected because they fall back to the default icon in Reminders.
 - `--emoji` writes a Reminders emoji badge for standard emoji such as `🥶` or `📌`.
 - `list-edit` resolves by exact list name, then safe normalized matching; if a duplicate match is ambiguous, use `--list-id`.
-- `list-pin` and `list-unpin` can target regular lists or smart lists by name. If a name matches both, use `--list-id` or `--smart-list-id`.
-- Verify regular list pinning with `lists --json` and smart-list pinning with `smart-lists --json`. Smart-list rows can leave `ZISPINNEDBYCURRENTUSER` empty while updating `ZPINNEDDATE`; RemCTL reports `pinned: true` when the smart-list pin date is positive.
+- `list-pin` and `list-unpin` can target regular lists, custom smart lists, or built-in smart lists (`Today`, `Scheduled`, `All`, `Flagged`, `Completed`, `Assigned`, `Urgent`) by name. If a name matches both a list and a smart list, use `--list-id` or `--smart-list-id`. Built-in smart lists are pinned by type because they are not reachable by object ID; custom smart lists are pinned by object ID.
+- For built-in smart lists, `list-pin` makes the list visible in the Reminders.app sidebar (matching Reminders.app's Show in Sidebar toggle); `list-unpin` hides it. ReminderKit reuses the same `setIsPinned:` setter and `ZPINNEDDATE` column for built-ins as for custom smart lists, but inverts the storage: a NULL `ZPINNEDDATE` means the built-in is shown, and any non-NULL value (positive timestamp or the `[NSDate distantPast]` sentinel `-63114076800`) means it is hidden. RemCTL flips the bool on the way through the helper so the user-facing verbs match the Reminders.app menu.
+- Verify regular list pinning with `lists --json` and smart-list pinning with `smart-lists --json`. Custom smart-list rows can leave `ZISPINNEDBYCURRENTUSER` empty while updating `ZPINNEDDATE`; RemCTL reports `pinned: true` when the custom smart-list pin date is positive. For built-in smart lists, RemCTL reports `pinned: true` when `ZPINNEDDATE` is NULL (the user-visible sidebar state).
+- `list-sort --by manual|default|priority|due-date|title|creation-date` calls `setSortingStyle:` on the list/smart-list change item. `manual` and `default` are persisted bare; `priority`, `due-date`, `title`, and `creation-date` are persisted with a direction suffix that matches Reminders.app (`priority_desc`, `displayDate_asc`, `title_asc`, `creationDate_asc` for the defaults). Use `--order desc|asc` to override the direction for the four directional styles. It targets regular lists, custom smart lists, and built-in smart lists (Today, Scheduled, All, Flagged, Completed, Assigned, Urgent); like pinning, an ambiguous name needs `--list-id` or `--smart-list-id`, and built-ins are fetched by type because they are not reachable by object ID. Verify with the `sortingStyle` field in `lists --json` / `smart-lists --json`.
 
 ## List Group Examples
 
