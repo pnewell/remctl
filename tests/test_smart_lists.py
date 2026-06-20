@@ -76,6 +76,7 @@ class SmartListFilterTests(unittest.TestCase):
             {"operation": "and", "date": {"afterDate": "15-05-2026"}},
             {"date": {"dateRange": ["15-05-2026", "15-05-2026"]}},
             {"operation": "and", "date": {"relativeRange": {"direction": "inNext", "magnitude": "1", "includePastDue": True, "units": "hour"}}},
+            {"date": {"noDate": ""}},
             {"time": {"afternoon": ""}},
             {"operation": "and", "time": {"noTime": ""}},
             {"location": {"vehicle": "connected"}},
@@ -124,6 +125,7 @@ class SmartListFilterTests(unittest.TestCase):
             build_supported_filter_payload(date_relative="in-next:1:hour:past-due"),
             {"date": {"relativeRange": {"direction": "inNext", "magnitude": "1", "includePastDue": True, "units": "hour"}}},
         )
+        self.assertEqual(build_supported_filter_payload(date_no_date=True), {"date": {"noDate": ""}})
         self.assertEqual(build_supported_filter_payload(time_filter="no-time"), {"time": {"noTime": ""}})
         self.assertEqual(build_supported_filter_payload(vehicle="disconnected"), {"location": {"vehicle": "disconnected"}})
         self.assertEqual(

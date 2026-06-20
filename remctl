@@ -6049,8 +6049,6 @@ def validate_materializing_smart_list_args(a):
         return
     if bool(getattr(a, "untagged", False)):
         raise SmartListFilterError("Untagged smart-list writes do not materialize reliably in Reminders.app.")
-    if getattr(a, "date", None) == "no-date":
-        raise SmartListFilterError("No-date smart-list writes do not materialize reliably in Reminders.app.")
     if getattr(a, "date_relative", None):
         raise SmartListFilterError("Relative-date smart-list writes do not materialize reliably in Reminders.app.")
     if getattr(a, "time", None) == "no-time":
@@ -8787,7 +8785,7 @@ def add_smart_list_filter_arguments(parser):
     parser.add_argument("--tag-match", choices=["all", "any"], default="any", help="Selected tag matching mode")
     parser.add_argument("--any-tag", action="store_true", help="Filter to reminders with any tag")
     parser.add_argument("--untagged", action="store_true", help=argparse.SUPPRESS)
-    parser.add_argument("--date", choices=["any", "today"], help="Date filter")
+    parser.add_argument("--date", choices=["any", "today", "no-date"], help="Date filter")
     parser.add_argument("--date-today-include-past-due", action="store_true", help="Include past due reminders with --date today")
     parser.add_argument("--date-on", help="Date filter: on YYYY-MM-DD")
     parser.add_argument("--date-before", help="Date filter: before YYYY-MM-DD")
@@ -9063,7 +9061,7 @@ _remctl() {
                 '--tags[Selected tag filter, comma-separated; # prefix optional]:tags:' \
                 '--tag-match[Selected tag matching mode]:match:(all any)' \
                 '--any-tag[Filter to reminders with any tag]' \
-                '--date[Date filter]:date:(any today)' \
+                '--date[Date filter]:date:(any today no-date)' \
                 '--date-on[On date]:date:' \
                 '--date-before[Before date]:date:' \
                 '--date-after[After date]:date:' \
@@ -9094,7 +9092,7 @@ _remctl() {
                 '--tags[Selected tag filter, comma-separated; # prefix optional]:tags:' \
                 '--tag-match[Selected tag matching mode]:match:(all any)' \
                 '--any-tag[Filter to reminders with any tag]' \
-                '--date[Date filter]:date:(any today)' \
+                '--date[Date filter]:date:(any today no-date)' \
                 '--date-on[On date]:date:' \
                 '--date-before[Before date]:date:' \
                 '--date-after[After date]:date:' \
@@ -9391,7 +9389,7 @@ complete -c remctl -n "__fish_seen_subcommand_from smart-list-create smart-list-
 complete -c remctl -n "__fish_seen_subcommand_from smart-list-create smart-list-edit" -l tags -d "Selected tag filter, comma-separated" -r
 complete -c remctl -n "__fish_seen_subcommand_from smart-list-create smart-list-edit" -l tag-match -d "Selected tag matching mode" -a "all any"
 complete -c remctl -n "__fish_seen_subcommand_from smart-list-create smart-list-edit" -l any-tag -d "Filter to reminders with any tag"
-complete -c remctl -n "__fish_seen_subcommand_from smart-list-create smart-list-edit" -l date -d "Date filter" -a "any today"
+complete -c remctl -n "__fish_seen_subcommand_from smart-list-create smart-list-edit" -l date -d "Date filter" -a "any today no-date"
 complete -c remctl -n "__fish_seen_subcommand_from smart-list-create smart-list-edit" -l date-today-include-past-due -d "Include past due with today"
 complete -c remctl -n "__fish_seen_subcommand_from smart-list-create smart-list-edit" -l date-on -d "On date" -r
 complete -c remctl -n "__fish_seen_subcommand_from smart-list-create smart-list-edit" -l date-before -d "Before date" -r
