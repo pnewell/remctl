@@ -2150,7 +2150,7 @@ class CliTests(unittest.TestCase):
             "Z_PK INTEGER PRIMARY KEY, ZNAME TEXT, ZCKIDENTIFIER TEXT, ZMARKEDFORDELETION INTEGER, "
             "Z_ENT INTEGER, ZSMARTLISTTYPE TEXT, ZFILTERDATA BLOB, "
             "ZMINIMUMSUPPORTEDAPPVERSION INTEGER, ZEFFECTIVEMINIMUMSUPPORTEDAPPVERSION INTEGER, "
-            "ZISPINNEDBYCURRENTUSER INTEGER, ZPINNEDDATE REAL)"
+            "ZISPINNEDBYCURRENTUSER INTEGER, ZPINNEDDATE REAL, ZSORTINGSTYLE TEXT)"
         )
         db.execute(
             "INSERT INTO ZREMCDBASELIST "
@@ -2162,9 +2162,9 @@ class CliTests(unittest.TestCase):
         db.execute(
             "INSERT INTO ZREMCDBASELIST "
             "(Z_PK, ZNAME, ZCKIDENTIFIER, ZMARKEDFORDELETION, Z_ENT, ZSMARTLISTTYPE, ZFILTERDATA, "
-            "ZMINIMUMSUPPORTEDAPPVERSION, ZEFFECTIVEMINIMUMSUPPORTEDAPPVERSION, ZISPINNEDBYCURRENTUSER, ZPINNEDDATE) "
-            "VALUES (?, ?, ?, 0, 4, ?, ?, ?, ?, ?, ?)",
-            (2, "High Priority", "CUSTOM-1", self.remctl.CUSTOM_SMART_LIST_TYPE, b'{"priorities":["high"]}', 20220430, 20220430, None, 456.0),
+            "ZMINIMUMSUPPORTEDAPPVERSION, ZEFFECTIVEMINIMUMSUPPORTEDAPPVERSION, ZISPINNEDBYCURRENTUSER, ZPINNEDDATE, ZSORTINGSTYLE) "
+            "VALUES (?, ?, ?, 0, 4, ?, ?, ?, ?, ?, ?, ?)",
+            (2, "High Priority", "CUSTOM-1", self.remctl.CUSTOM_SMART_LIST_TYPE, b'{"priorities":["high"]}', 20220430, 20220430, None, 456.0, "displayDate_desc"),
         )
         db.execute(
             "INSERT INTO ZREMCDBASELIST "
@@ -2190,7 +2190,7 @@ class CliTests(unittest.TestCase):
         self.assertEqual(payload[0]["kind"], "built-in")
         self.assertEqual(payload[0]["name"], "Flagged")
         self.assertEqual(payload[0]["filterLength"], 0)
-        self.assertTrue(payload[0]["pinned"])
+        self.assertFalse(payload[0]["pinned"])
         self.assertEqual(payload[0]["pinnedDate"], 123.0)
         self.assertEqual(payload[1]["kind"], "custom")
         self.assertTrue(payload[1]["pinned"])
@@ -2199,6 +2199,8 @@ class CliTests(unittest.TestCase):
         self.assertEqual(payload[1]["effectiveMinimumSupportedVersion"], 20220430)
         self.assertEqual(payload[1]["filter"]["kind"], "priority")
         self.assertEqual(payload[1]["filterJSON"], {"priorities": ["high"]})
+        self.assertEqual(payload[1]["sortingStyle"], "displayDate_desc")
+        self.assertNotIn("sortingStyle", payload[0])
 
     def test_list_pin_supports_smart_list_by_name_and_id(self):
         db = self._smart_list_db()
@@ -2214,7 +2216,7 @@ class CliTests(unittest.TestCase):
                 self.remctl.cmd_list_pin(pin_args)
             self.assertEqual(
                 pin_call.call_args.args[0],
-                {"action": "set_smart_list_pinned", "smartListId": "BUILTIN-1", "pinned": True},
+                {"action": "set_smart_list_pinned", "smartListType": "com.apple.reminders.smartlist.flagged", "pinned": True},
             )
             self.assertEqual(json.loads(stdout.getvalue())["kind"], "smart-list")
 
@@ -2231,6 +2233,124 @@ class CliTests(unittest.TestCase):
             )
         finally:
             db.close()
+
+    def test_list_sort_maps_choice_to_sorting_style_for_list_and_smart_list(self):
+        db = self._smart_list_db()
+        list_args = SimpleNamespace(name="Reminders", list_id=None, smart_list_id=None, by="due-date", order=None, private=True, json=True)
+        smart_args = SimpleNamespace(name=None, list_id=None, smart_list_id=2, by="creation-date", order=None, private=True, json=True)
+        try:
+            with (
+                mock.patch.object(self.remctl, "open_db", return_value=db),
+                mock.patch.object(self.remctl, "private_available", return_value=True),
+                mock.patch.object(self.remctl, "private_call", return_value={"status": "updated"}) as list_call,
+                contextlib.redirect_stdout(io.StringIO()) as stdout,
+            ):
+                self.remctl.cmd_list_sort(list_args)
+            self.assertEqual(
+                list_call.call_args.args[0],
+                {"action": "set_list_sort", "listId": "LIST-1", "sortingStyle": "displayDate_asc"},
+            )
+            self.assertEqual(json.loads(stdout.getvalue())["kind"], "list")
+
+            with (
+                mock.patch.object(self.remctl, "open_db", return_value=db),
+                mock.patch.object(self.remctl, "private_available", return_value=True),
+                mock.patch.object(self.remctl, "private_call", return_value={"status": "updated"}) as smart_call,
+                contextlib.redirect_stdout(io.StringIO()) as stdout,
+            ):
+                self.remctl.cmd_list_sort(smart_args)
+            self.assertEqual(
+                smart_call.call_args.args[0],
+                {"action": "set_smart_list_sort", "smartListId": "CUSTOM-1", "sortingStyle": "creationDate_asc"},
+            )
+            self.assertEqual(json.loads(stdout.getvalue())["kind"], "smart-list")
+
+            title_asc_args = SimpleNamespace(name="Reminders", list_id=None, smart_list_id=None, by="title", order=None, private=True, json=True)
+            with (
+                mock.patch.object(self.remctl, "open_db", return_value=db),
+                mock.patch.object(self.remctl, "private_available", return_value=True),
+                mock.patch.object(self.remctl, "private_call", return_value={"status": "updated"}) as title_call,
+                contextlib.redirect_stdout(io.StringIO()),
+            ):
+                self.remctl.cmd_list_sort(title_asc_args)
+            self.assertEqual(
+                title_call.call_args.args[0],
+                {"action": "set_list_sort", "listId": "LIST-1", "sortingStyle": "title_asc"},
+            )
+
+            priority_asc_args = SimpleNamespace(name="Reminders", list_id=None, smart_list_id=None, by="priority", order="asc", private=True, json=True)
+            with (
+                mock.patch.object(self.remctl, "open_db", return_value=db),
+                mock.patch.object(self.remctl, "private_available", return_value=True),
+                mock.patch.object(self.remctl, "private_call", return_value={"status": "updated"}) as priority_asc_call,
+                contextlib.redirect_stdout(io.StringIO()),
+            ):
+                self.remctl.cmd_list_sort(priority_asc_args)
+            self.assertEqual(
+                priority_asc_call.call_args.args[0],
+                {"action": "set_list_sort", "listId": "LIST-1", "sortingStyle": "priority_asc"},
+            )
+
+            manual_args = SimpleNamespace(name="Reminders", list_id=None, smart_list_id=None, by="manual", order=None, private=True, json=True)
+            with (
+                mock.patch.object(self.remctl, "open_db", return_value=db),
+                mock.patch.object(self.remctl, "private_available", return_value=True),
+                mock.patch.object(self.remctl, "private_call", return_value={"status": "updated"}) as manual_call,
+                contextlib.redirect_stdout(io.StringIO()),
+            ):
+                self.remctl.cmd_list_sort(manual_args)
+            self.assertEqual(
+                manual_call.call_args.args[0],
+                {"action": "set_list_sort", "listId": "LIST-1", "sortingStyle": "manual"},
+            )
+
+            default_args = SimpleNamespace(name="Reminders", list_id=None, smart_list_id=None, by="default", order=None, private=True, json=True)
+            with (
+                mock.patch.object(self.remctl, "open_db", return_value=db),
+                mock.patch.object(self.remctl, "private_available", return_value=True),
+                mock.patch.object(self.remctl, "private_call", return_value={"status": "updated"}) as default_call,
+                contextlib.redirect_stdout(io.StringIO()),
+            ):
+                self.remctl.cmd_list_sort(default_args)
+            self.assertEqual(
+                default_call.call_args.args[0],
+                {"action": "set_list_sort", "listId": "LIST-1", "sortingStyle": "default"},
+            )
+        finally:
+            db.close()
+
+    def test_list_sort_builtin_smart_list_uses_type(self):
+        db = self._smart_list_db()
+        args = SimpleNamespace(name="Flagged", list_id=None, smart_list_id=None, by="priority", order=None, private=True, json=True)
+        try:
+            with (
+                mock.patch.object(self.remctl, "open_db", return_value=db),
+                mock.patch.object(self.remctl, "private_available", return_value=True),
+                mock.patch.object(self.remctl, "private_call", return_value={"status": "updated"}) as private_call,
+                contextlib.redirect_stdout(io.StringIO()) as stdout,
+            ):
+                self.remctl.cmd_list_sort(args)
+            self.assertEqual(
+                private_call.call_args.args[0],
+                {"action": "set_smart_list_sort", "smartListType": "com.apple.reminders.smartlist.flagged", "sortingStyle": "priority_desc"},
+            )
+            self.assertEqual(json.loads(stdout.getvalue())["kind"], "smart-list")
+        finally:
+            db.close()
+
+    def test_list_sort_rejects_without_private_before_helper(self):
+        args = SimpleNamespace(name="Reminders", list_id=None, smart_list_id=None, by="due-date", order=None, private=False, json=True)
+        with (
+            mock.patch.object(self.remctl, "private_available") as private_available,
+            mock.patch.object(self.remctl, "private_call") as private_call,
+            contextlib.redirect_stderr(io.StringIO()) as stderr,
+            self.assertRaises(SystemExit),
+        ):
+            self.remctl.cmd_list_sort(args)
+
+        private_available.assert_not_called()
+        private_call.assert_not_called()
+        self.assertIn("--private", stderr.getvalue())
 
     def test_smart_list_create_rejects_without_private_before_helper(self):
         args = SimpleNamespace(name="Nope", private=False, flagged=True, priority=None, json=True)

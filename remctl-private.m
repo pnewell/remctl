@@ -21,6 +21,11 @@
 - (id)fetchDefaultAccountWithError:(NSError **)error;
 @end
 
+@interface REMSmartListsDataView : NSObject
+- (instancetype)initWithStore:(REMStore *)store;
+- (id)fetchNonCustomSmartListWithSmartListType:(NSString *)smartListType createIfNeeded:(BOOL)createIfNeeded error:(NSError **)error;
+@end
+
 @interface REMSaveRequest : NSObject
 - (instancetype)initWithStore:(REMStore *)store;
 - (id)updateAccount:(id)account;
@@ -66,6 +71,7 @@
 - (void)setName:(NSString *)name;
 - (void)setParentOwnerID:(id)objectID;
 - (void)setSmartListType:(NSString *)smartListType;
+- (void)setSortingStyle:(NSString *)sortingStyle;
 - (void)removeFromParentWithAccountChangeItem:(id)accountChangeItem;
 @end
 
@@ -153,6 +159,7 @@
 - (void)setName:(NSString *)name;
 - (void)setParentOwnerID:(id)objectID;
 - (void)setParentSubContainerID:(id)objectID;
+- (void)setSortingStyle:(NSString *)sortingStyle;
 - (void)removeFromParentWithAccountChangeItem:(id)accountChangeItem;
 @end
 
@@ -699,6 +706,8 @@ int main(int argc, const char * argv[]) {
             @"set_list_appearance",
             @"set_list_pinned",
             @"set_smart_list_pinned",
+            @"set_list_sort",
+            @"set_smart_list_sort",
             @"categorize_grocery_items",
             @"create_smart_list",
             @"update_smart_list",
@@ -1324,26 +1333,34 @@ int main(int argc, const char * argv[]) {
             return 0;
         }
         if ([action isEqualToString:@"set_smart_list_pinned"]) {
-            NSString *smartListID = cmd[@"smartListId"];
-            if (![smartListID isKindOfClass:[NSString class]] || smartListID.length == 0) {
-                fail(@"smartListId is required");
-            }
             NSNumber *pinned = cmd[@"pinned"];
             if (![pinned isKindOfClass:[NSNumber class]]) {
                 fail(@"pinned is required");
             }
-            NSURL *objectURL = smartListURL(smartListID);
-            id objectID = [REMObjectID objectIDWithURL:objectURL];
-            if (!objectID) {
-                fail(@"Could not build ReminderKit smart list object ID");
-            }
+            NSString *smartListType = cmd[@"smartListType"];
+            NSString *smartListID = cmd[@"smartListId"];
             REMStore *store = [REMStore new];
             id smartList = nil;
-            if ([store respondsToSelector:@selector(fetchSmartListWithObjectID:error:)]) {
-                smartList = [store fetchSmartListWithObjectID:objectID error:&error];
-            }
-            if (!smartList) {
-                smartList = [store fetchCustomSmartListWithObjectID:objectID error:&error];
+            if ([smartListType isKindOfClass:[NSString class]] && smartListType.length > 0) {
+                // Built-in smart lists are not reachable by object ID; fetch them by type.
+                REMSmartListsDataView *dataView = [[REMSmartListsDataView alloc] initWithStore:store];
+                if (![dataView respondsToSelector:@selector(fetchNonCustomSmartListWithSmartListType:createIfNeeded:error:)]) {
+                    fail(@"ReminderKit does not support built-in smart list lookup on this OS");
+                }
+                smartList = [dataView fetchNonCustomSmartListWithSmartListType:smartListType createIfNeeded:NO error:&error];
+            } else if ([smartListID isKindOfClass:[NSString class]] && smartListID.length > 0) {
+                id objectID = [REMObjectID objectIDWithURL:smartListURL(smartListID)];
+                if (!objectID) {
+                    fail(@"Could not build ReminderKit smart list object ID");
+                }
+                if ([store respondsToSelector:@selector(fetchSmartListWithObjectID:error:)]) {
+                    smartList = [store fetchSmartListWithObjectID:objectID error:&error];
+                }
+                if (!smartList) {
+                    smartList = [store fetchCustomSmartListWithObjectID:objectID error:&error];
+                }
+            } else {
+                fail(@"smartListId or smartListType is required");
             }
             if (!smartList) {
                 fail(error.localizedDescription ?: @"Smart list not found");
@@ -1356,16 +1373,128 @@ int main(int argc, const char * argv[]) {
             if (![change respondsToSelector:@selector(setIsPinned:)]) {
                 fail(@"ReminderKit smart list change item does not support pinning");
             }
-            [change setIsPinned:[pinned boolValue]];
+            // Built-in smart lists reuse setIsPinned: for sidebar visibility, but the
+            // meaning is inverted versus custom smart lists: setIsPinned:NO writes a
+            // NULL ZPINNEDDATE which Reminders.app reads as "shown in sidebar", and
+            // setIsPinned:YES writes a positive timestamp which Reminders.app reads as
+            // "hidden". remctl exposes list-pin / list-unpin from the user's
+            // perspective (pin = visible in sidebar), so flip here for built-ins.
+            BOOL applyPinned = [pinned boolValue];
+            if (smartListType) {
+                applyPinned = !applyPinned;
+            }
+            [change setIsPinned:applyPinned];
             if (![save saveSynchronouslyWithError:&error]) {
                 fail(error.localizedDescription ?: @"ReminderKit smart list pin save failed");
+            }
+            NSMutableDictionary *details = [NSMutableDictionary dictionaryWithDictionary:@{
+                @"status": @"updated",
+                @"action": action,
+                @"pinned": @([pinned boolValue]),
+            }];
+            if (smartListType) {
+                details[@"smartListType"] = smartListType;
+            } else {
+                details[@"smartListId"] = smartListID;
+            }
+            output(details);
+            return 0;
+        }
+        if ([action isEqualToString:@"set_list_sort"]) {
+            NSString *listID = cmd[@"listId"];
+            if (![listID isKindOfClass:[NSString class]] || listID.length == 0) {
+                fail(@"listId is required");
+            }
+            NSString *sortingStyle = cmd[@"sortingStyle"];
+            if (![sortingStyle isKindOfClass:[NSString class]] || sortingStyle.length == 0) {
+                fail(@"sortingStyle is required");
+            }
+            NSURL *objectURL = listURL(listID);
+            id objectID = [REMObjectID objectIDWithURL:objectURL];
+            if (!objectID) {
+                fail(@"Could not build ReminderKit list object ID");
+            }
+            REMStore *store = [REMStore new];
+            id list = [store fetchListWithObjectID:objectID error:&error];
+            if (!list) {
+                fail(error.localizedDescription ?: @"List not found");
+            }
+            REMSaveRequest *save = [[REMSaveRequest alloc] initWithStore:store];
+            REMListChangeItem *change = [save updateList:list];
+            if (!change) {
+                fail(@"Could not create ReminderKit list change item");
+            }
+            if (![change respondsToSelector:@selector(setSortingStyle:)]) {
+                fail(@"ReminderKit list change item does not support sorting");
+            }
+            [change setSortingStyle:sortingStyle];
+            if (![save saveSynchronouslyWithError:&error]) {
+                fail(error.localizedDescription ?: @"ReminderKit list sort save failed");
             }
             output(@{
                 @"status": @"updated",
                 @"action": action,
-                @"smartListId": smartListID,
-                @"pinned": @([pinned boolValue]),
+                @"listId": listID,
+                @"sortingStyle": sortingStyle,
             });
+            return 0;
+        }
+        if ([action isEqualToString:@"set_smart_list_sort"]) {
+            NSString *sortingStyle = cmd[@"sortingStyle"];
+            if (![sortingStyle isKindOfClass:[NSString class]] || sortingStyle.length == 0) {
+                fail(@"sortingStyle is required");
+            }
+            NSString *smartListType = cmd[@"smartListType"];
+            NSString *smartListID = cmd[@"smartListId"];
+            REMStore *store = [REMStore new];
+            id smartList = nil;
+            if ([smartListType isKindOfClass:[NSString class]] && smartListType.length > 0) {
+                // Built-in smart lists are not reachable by object ID; fetch them by type.
+                REMSmartListsDataView *dataView = [[REMSmartListsDataView alloc] initWithStore:store];
+                if (![dataView respondsToSelector:@selector(fetchNonCustomSmartListWithSmartListType:createIfNeeded:error:)]) {
+                    fail(@"ReminderKit does not support built-in smart list lookup on this OS");
+                }
+                smartList = [dataView fetchNonCustomSmartListWithSmartListType:smartListType createIfNeeded:NO error:&error];
+            } else if ([smartListID isKindOfClass:[NSString class]] && smartListID.length > 0) {
+                id objectID = [REMObjectID objectIDWithURL:smartListURL(smartListID)];
+                if (!objectID) {
+                    fail(@"Could not build ReminderKit smart list object ID");
+                }
+                if ([store respondsToSelector:@selector(fetchSmartListWithObjectID:error:)]) {
+                    smartList = [store fetchSmartListWithObjectID:objectID error:&error];
+                }
+                if (!smartList) {
+                    smartList = [store fetchCustomSmartListWithObjectID:objectID error:&error];
+                }
+            } else {
+                fail(@"smartListId or smartListType is required");
+            }
+            if (!smartList) {
+                fail(error.localizedDescription ?: @"Smart list not found");
+            }
+            REMSaveRequest *save = [[REMSaveRequest alloc] initWithStore:store];
+            REMSmartListChangeItem *change = [save updateSmartList:smartList];
+            if (!change) {
+                fail(@"Could not create ReminderKit smart list change item");
+            }
+            if (![change respondsToSelector:@selector(setSortingStyle:)]) {
+                fail(@"ReminderKit smart list change item does not support sorting");
+            }
+            [change setSortingStyle:sortingStyle];
+            if (![save saveSynchronouslyWithError:&error]) {
+                fail(error.localizedDescription ?: @"ReminderKit smart list sort save failed");
+            }
+            NSMutableDictionary *details = [NSMutableDictionary dictionaryWithDictionary:@{
+                @"status": @"updated",
+                @"action": action,
+                @"sortingStyle": sortingStyle,
+            }];
+            if (smartListType) {
+                details[@"smartListType"] = smartListType;
+            } else {
+                details[@"smartListId"] = smartListID;
+            }
+            output(details);
             return 0;
         }
         if ([action isEqualToString:@"categorize_grocery_items"]) {

@@ -139,7 +139,7 @@ Date-only `add -d` inputs create all-day reminders instead of midnight timed rem
 
 `upcoming DAYS` accepts 1 through 3650 days. Zero and negative ranges fail before RemCTL opens the Reminders database.
 
-List targets are consistent across commands that can safely resolve them: pass a list name positionally or with `-l/--list`, or pass `--list-id` when an exact numeric target matters. If both a name and `--list-id` are provided, RemCTL fails before writing or exporting. This applies to `show`, `add`, `edit`, `link`, `export`, `list-edit`, `list-pin`, `list-unpin`, `list-rename`, `list-delete`, and the smart-list `--include-list-id` filter. For pinning, `list-pin` and `list-unpin` also accept smart-list names or `--smart-list-id`; if a name matches both a regular list and a smart list, RemCTL fails before writing and asks for an explicit ID.
+List targets are consistent across commands that can safely resolve them: pass a list name positionally or with `-l/--list`, or pass `--list-id` when an exact numeric target matters. If both a name and `--list-id` are provided, RemCTL fails before writing or exporting. This applies to `show`, `add`, `edit`, `link`, `export`, `list-edit`, `list-pin`, `list-unpin`, `list-sort`, `list-rename`, `list-delete`, and the smart-list `--include-list-id` filter. For pinning and sorting, `list-pin`, `list-unpin`, and `list-sort` also accept smart-list names or `--smart-list-id`; if a name matches both a regular list and a smart list, RemCTL fails before writing and asks for an explicit ID.
 
 Reminders list groups are containers for lists. Use `groups` to inspect them, or `lists --json` to get group rows with `children` plus child list rows with `group` metadata. `show <group>` reads across child lists. `group-create`, `group-edit`, and `group-delete` use private ReminderKit and require `--private`; they move list containers only, so reminders stay in their existing lists. Write commands that need a real list reject group targets before making changes and report the child lists you can target instead.
 
@@ -242,6 +242,9 @@ remctl list-pin "Project X" --private
 remctl list-pin "Flagged" --private
 remctl list-unpin --list-id 144 --private
 remctl list-unpin --smart-list-id 4 --private
+remctl list-sort "Project X" --by priority --private
+remctl list-sort --smart-list-id 4 --by due-date --private
+remctl list-sort "Project X" --by title --order desc --private
 remctl list-rename "Project X" "Project Y"
 remctl list-rename --list-id 144 --new-name "Project Y"
 remctl list-delete "Project Y" --force
@@ -250,7 +253,7 @@ remctl list-delete --list-id 144 --force
 
 `list-create --color NAME` uses EventKit and supports Reminders color names such as `red`, `orange`, `yellow`, `green`, `blue`, `purple`, `brown`, `gray`, and `cyan`.
 
-List symbols, emoji badges, Groceries mode, and pin state are private Reminders metadata and require `--private`. `list-edit` is the exact-target appearance and list-type editor; `list-pin` and `list-unpin` toggle the Reminders.app sidebar pin state for regular lists and smart lists. Use `--list-id` or `--smart-list-id` when duplicate or normalized names could match more than one target. With `--private`, `--color` also accepts `#RRGGBB`.
+List symbols, emoji badges, Groceries mode, pin state, and sort order are private Reminders metadata and require `--private`. `list-edit` is the exact-target appearance and list-type editor; `list-pin` and `list-unpin` toggle the Reminders.app sidebar pin state for regular lists, custom smart lists, and built-in smart lists such as `Today` or `Flagged`. `list-sort --by manual|default|priority|due-date|title|creation-date` sets the stored sort order for regular lists, custom smart lists, and built-in smart lists; built-in smart lists are looked up by their smart-list type because Reminders does not expose them by object ID. `--order desc|asc` overrides the Reminders.app default for `priority`, `due-date`, `title`, and `creation-date` (the others are not directional). Results are reported as `sortingStyle` in `lists --json` / `smart-lists --json`. Use `--list-id` or `--smart-list-id` when duplicate or normalized names could match more than one target. With `--private`, `--color` also accepts `#RRGGBB`.
 
 Groceries lists are detected from private list columns. Human `lists` and `show` output marks them with `🥕`, and `show` decorates known Groceries section headings with matching category emoji such as `🥛 Dairy, Eggs & Cheese`, `🥬 Produce`, and `🧻 Household Items`. `lists --json` includes `listType`, `isGroceries`, and `grocery` locale/categorization fields; `show --json` includes `sectionEmoji` when a reminder belongs to a known Groceries category. Use `list-create --private --groceries --grocery-locale en_US` for new Groceries lists, `list-edit --private --groceries` or `--standard` to convert existing lists, and `add/edit --private --grocery` to verify Reminders' automatic grocery sections, with an explicit ReminderKit categorizer fallback when needed.
 
