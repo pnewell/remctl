@@ -168,6 +168,11 @@ class LiveMatrix:
             "requires --private",
         )
         self.expect_fail(
+            "guardrail messaging trigger without private",
+            ["edit", "0", "--remind-when-messaging", "+15555550123", "--json"],
+            "require --private",
+        )
+        self.expect_fail(
             "guardrail non-materializing untagged smart list",
             ["smart-list-create", f"{self.prefix} Bad Untagged", "--private", "--untagged", "--json"],
             "do not materialize reliably",

@@ -458,6 +458,56 @@ def parse_list_color(blob):
     return {"name": "blue", "hex": "#007AFF"}
 
 
+def contact_handles_from_row(row):
+    blob = row.get("ZCONTACTHANDLES") if isinstance(row, dict) else None
+    if blob is None:
+        try:
+            blob = row["ZCONTACTHANDLES"]
+        except (KeyError, IndexError, TypeError):
+            return None
+    if not blob:
+        return None
+    try:
+        archive = plistlib.loads(bytes(blob))
+        objects = archive.get("$objects", [])
+    except Exception:
+        return None
+
+    def deref(uid):
+        if hasattr(uid, "data") and 0 <= uid.data < len(objects):
+            return objects[uid.data]
+        return uid
+
+    def strings(container):
+        container = deref(container)
+        if not isinstance(container, dict):
+            return []
+        out = []
+        for item in container.get("NS.objects", []):
+            value = deref(item)
+            if isinstance(value, str):
+                out.append(value)
+        return out
+
+    for obj in objects:
+        if not isinstance(obj, dict):
+            continue
+        class_ref = obj.get("$class")
+        class_name = ""
+        if class_ref is not None:
+            class_obj = deref(class_ref)
+            if isinstance(class_obj, dict):
+                class_name = class_obj.get("$classname", "") or ""
+        if class_name != "REMContactRepresentation":
+            continue
+        phones = strings(obj["phones"]) if "phones" in obj else []
+        emails = strings(obj["emails"]) if "emails" in obj else []
+        if phones or emails:
+            return {"phones": phones, "emails": emails}
+        return None
+    return None
+
+
 def parse_badge_emblem(value):
     if not value:
         return None
@@ -1887,6 +1937,11 @@ def display_due_expr(db, table_alias="r"):
         return f"{table_alias}.ZDISPLAYDATEDATE"
     return "NULL"
 
+def contact_handles_expr(db, table_alias="r"):
+    if reminder_has_column(db, "ZCONTACTHANDLES"):
+        return f"{table_alias}.ZCONTACTHANDLES"
+    return "NULL"
+
 def due_expr(table_alias="r"):
     return f"{table_alias}.ZDUEDATE"
 
@@ -1911,6 +1966,7 @@ def rem_cols(db):
     {due_expr()} AS ZDUEDATE, {display_due_expr(db)} AS ZDISPLAYDATEDATE,
     r.ZALLDAY, r.ZCOMPLETIONDATE, r.ZCREATIONDATE,
     r.ZPARENTREMINDER, r.ZLIST, r.ZICSURL, r.ZCKIDENTIFIER, l.ZNAME as list_name,
+    {contact_handles_expr(db)} AS ZCONTACTHANDLES,
     {_RECURRENCE_COLS}"""
 
 def q_reminders(db, list_pk=None, completed=False, parent_pk=None, top_level=False, limit=500):
@@ -2687,6 +2743,7 @@ def to_dict(r, db=None, section=None, _sc=None, _ht=None):
         rich_link_resolver=q_rich_link,
         fallback_subtask_count=q_subtask_count,
         fallback_hashtags=lambda inner_db, pk: [t["ZNAME"] for t in q_hashtags(inner_db, pk)],
+        contact_handles_fn=contact_handles_from_row,
     )
     if db is not None and _item_has(r, "Z_PK"):
         assignment = assignment_to_dict(q_assignment(db, r["Z_PK"]))
@@ -2709,6 +2766,7 @@ def reminders_to_dicts(items, db=None, memberships=None):
         rich_link_resolver=q_rich_link,
         fallback_subtask_count=q_subtask_count,
         fallback_hashtags=lambda inner_db, pk: [t["ZNAME"] for t in q_hashtags(inner_db, pk)],
+        contact_handles_fn=contact_handles_from_row,
     )
     if db is not None:
         for item, payload in zip(items, payloads):
@@ -3693,6 +3751,20 @@ def is_web_url(value):
     return parsed.scheme.lower() in {"http", "https"} and bool(parsed.netloc)
 
 
+def messaging_handles_from_value(value):
+    phones = []
+    emails = []
+    for part in (value or "").split(","):
+        handle = part.strip()
+        if not handle:
+            continue
+        if "@" in handle:
+            emails.append(handle)
+        else:
+            phones.append(handle)
+    return {"phones": phones, "emails": emails}
+
+
 def validate_private_args(a):
     if getattr(a, "assign", None) and getattr(a, "unassign", False):
         print("Error: pass either --assign or --unassign, not both.", file=sys.stderr)
@@ -3737,6 +3809,16 @@ def validate_private_args(a):
         if getattr(a, "radius", 100) is not None and getattr(a, "radius", 100) <= 0:
             print("Error: --radius must be greater than 0.", file=sys.stderr)
             sys.exit(1)
+
+    messaging = getattr(a, "remind_when_messaging", None)
+    if messaging is not None:
+        if messaging.strip().lower() == "clear":
+            pass  # Clear sentinel; no handle requirement.
+        else:
+            handles = messaging_handles_from_value(messaging)
+            if not handles["phones"] and not handles["emails"]:
+                print("Error: --remind-when-messaging requires at least one phone number or email handle, or 'clear'.", file=sys.stderr)
+                sys.exit(1)
 
     parse_subtask_specs(getattr(a, "subtask", None))
 
@@ -4274,6 +4356,7 @@ def private_changes_from_args(a):
         getattr(a, "location_title", None),
         getattr(a, "latitude", None) is not None,
         getattr(a, "longitude", None) is not None,
+        getattr(a, "remind_when_messaging", None) is not None,
         getattr(a, "assign", None),
         getattr(a, "unassign", False),
     ])
@@ -4293,6 +4376,7 @@ def private_only_changes_from_args(a):
         getattr(a, "location_title", None),
         getattr(a, "latitude", None) is not None,
         getattr(a, "longitude", None) is not None,
+        getattr(a, "remind_when_messaging", None) is not None,
         getattr(a, "assign", None),
         getattr(a, "unassign", False),
     ])
@@ -4301,7 +4385,7 @@ def private_only_changes_from_args(a):
 def refuse_private_args_without_opt_in(a):
     if private_only_changes_from_args(a) and not private_metadata_enabled(a):
         print(
-            "Error: grocery, section, assignment, subtask, image, urgent, early-reminder, flagged, and location writes require --private. "
+            "Error: grocery, section, assignment, subtask, image, urgent, early-reminder, flagged, location, and messaging writes require --private. "
             "Example: remctl add \"Milk\" -l Groceries --private --grocery",
             file=sys.stderr,
         )
@@ -4542,6 +4626,23 @@ def apply_private_changes(reminder_ckid, a, db=None, list_pk=None):
             "proximity": proximity,
             "address": getattr(a, "address", None),
         }))
+
+    messaging = getattr(a, "remind_when_messaging", None)
+    if messaging is not None:
+        if messaging.strip().lower() == "clear":
+            results.append(private_action({
+                "action": "set_contact_handles",
+                "id": reminder_ckid,
+                "clear": True,
+            }))
+        else:
+            handles = messaging_handles_from_value(messaging)
+            results.append(private_action({
+                "action": "set_contact_handles",
+                "id": reminder_ckid,
+                "phones": handles["phones"],
+                "emails": handles["emails"],
+            }))
 
     if getattr(a, "assign", None):
         if db is None:
@@ -8102,8 +8203,8 @@ def cmd_info(a):
     if r["ZLIST"]:
         memberships = q_section_memberships(db, r["ZLIST"])
         sec = memberships.get(r["ZCKIDENTIFIER"])
+    d = hydrate_reminder_detail(db, to_dict(r, db, section=sec), a.id)
     if a.json:
-        d = hydrate_reminder_detail(db, to_dict(r, db, section=sec), a.id)
         if subs:
             subtask_payloads = reminders_to_dicts(subs, db)
             for subtask_payload in subtask_payloads:
@@ -8144,6 +8245,10 @@ def cmd_info(a):
     if early_reminders:
         labels = ", ".join(item["label"] for item in early_reminders)
         print(f"  Early:     {C.cyan(labels)}")
+    messaging = d.get("contactHandles")
+    if messaging:
+        handles = ", ".join(messaging.get("phones", []) + messaging.get("emails", []))
+        print(f"  Messaging: {C.cyan(safe_display(handles))}")
     recurrence = recurrence_summary(_recurrence_from_item(r))
     if recurrence:
         print(f"  Repeats:   {C.magenta(recurrence)}")
@@ -8964,6 +9069,7 @@ _remctl() {
                 '--urgent[Set private urgent state]' \
                 '--no-urgent[Clear private urgent state]' \
                 '--early-reminder[Set Early Reminder delta, e.g. 15m, 1h, clear]:delta:' \
+                '--remind-when-messaging[Messaging trigger, comma-separated phones/emails, or clear]:handles:' \
                 '--url[URL, web rich link with --private]:url:' \
                 '(-t --tags)'{-t,--tags}'[Tags, synced with --private]:tags:' \
                 '(-l --list)'{-l,--list}'[Target list]:list:' \
@@ -9003,6 +9109,7 @@ _remctl() {
                 '--longitude[Location alarm longitude]:longitude:' \
                 '--radius[Location alarm radius meters]:radius:' \
                 '--proximity[Location alarm trigger]:proximity:(arriving leaving)' \
+                '--remind-when-messaging[Messaging trigger, comma-separated phones/emails, or clear]:handles:' \
                 '--title[New title]:title:' \
                 '(-l --list)'{-l,--list}'[Move to list]:list:' \
                 '--list-id[Move to list by stable numeric ID]:id:' \
@@ -9207,13 +9314,13 @@ BASH_COMPLETION = '''_remctl() {
 
     local cmd="${COMP_WORDS[1]}"
     if [ "$cmd" = "add" ]; then
-        COMPREPLY=( $(compgen -W "--private --grocery --section --section-id --new-section --subtask --image --assign --unassign --urgent --no-urgent --early-reminder --url --tags -t --list -l --list-id --notes -n --due -d --priority -p --flag -f --recurrence --alarm --json" -- "$cur") )
+        COMPREPLY=( $(compgen -W "--private --grocery --section --section-id --new-section --subtask --image --assign --unassign --urgent --no-urgent --early-reminder --remind-when-messaging --url --tags -t --list -l --list-id --notes -n --due -d --priority -p --flag -f --recurrence --alarm --json" -- "$cur") )
         return
     elif [ "$cmd" = "done" ]; then
         COMPREPLY=( $(compgen -W "--date --json" -- "$cur") )
         return
     elif [ "$cmd" = "edit" ]; then
-        COMPREPLY=( $(compgen -W "--private --grocery --section --section-id --new-section --subtask --image --assign --unassign --flagged --no-flagged --urgent --no-urgent --early-reminder --location-title --latitude --longitude --radius --proximity --title --list -l --list-id --url --tags -t --notes -n --due -d --priority -p --recurrence --alarm --json" -- "$cur") )
+        COMPREPLY=( $(compgen -W "--private --grocery --section --section-id --new-section --subtask --image --assign --unassign --flagged --no-flagged --urgent --no-urgent --early-reminder --location-title --latitude --longitude --radius --proximity --remind-when-messaging --title --list -l --list-id --url --tags -t --notes -n --due -d --priority -p --recurrence --alarm --json" -- "$cur") )
         return
     elif [ "$cmd" = "doctor" ]; then
         COMPREPLY=( $(compgen -W "--for-agent --json" -- "$cur") )
@@ -9487,6 +9594,7 @@ complete -c remctl -n "__fish_seen_subcommand_from add" -l grocery -d "Auto-cate
 complete -c remctl -n "__fish_seen_subcommand_from add" -l urgent -d "Set private urgent state"
 complete -c remctl -n "__fish_seen_subcommand_from add" -l no-urgent -d "Clear private urgent state"
 complete -c remctl -n "__fish_seen_subcommand_from add" -l early-reminder -d "Set Early Reminder delta, e.g. 15m, 1h, clear" -r
+complete -c remctl -n "__fish_seen_subcommand_from add" -l remind-when-messaging -d "Messaging trigger, comma-separated phones/emails, or clear" -r
 complete -c remctl -n "__fish_seen_subcommand_from add" -l url -d "URL, web rich link with --private" -r
 complete -c remctl -n "__fish_seen_subcommand_from add" -s t -l tags -d "Tags, synced with --private" -r
 complete -c remctl -n "__fish_seen_subcommand_from add" -l list-id -d "Target list by stable numeric ID" -r
@@ -9509,6 +9617,7 @@ complete -c remctl -n "__fish_seen_subcommand_from edit" -l latitude -d "Locatio
 complete -c remctl -n "__fish_seen_subcommand_from edit" -l longitude -d "Location alarm longitude" -r
 complete -c remctl -n "__fish_seen_subcommand_from edit" -l radius -d "Location alarm radius" -r
 complete -c remctl -n "__fish_seen_subcommand_from edit" -l proximity -d "Location trigger" -a "arriving leaving"
+complete -c remctl -n "__fish_seen_subcommand_from edit" -l remind-when-messaging -d "Messaging trigger, comma-separated phones/emails, or clear" -r
 complete -c remctl -n "__fish_seen_subcommand_from edit" -s l -l list -d "Move to list" -r
 complete -c remctl -n "__fish_seen_subcommand_from edit" -l list-id -d "Move to list by stable numeric ID" -r
 complete -c remctl -n "__fish_seen_subcommand_from edit" -s t -l tags -d "Synced tags with --private" -r
@@ -10485,6 +10594,7 @@ def main():
     c.add_argument("--unassign", action="store_true", help="Private metadata: clear any existing assignment")
     c.add_argument("--urgent", action=argparse.BooleanOptionalAction, default=None, help="Private metadata: set urgent state")
     c.add_argument("--early-reminder", help="Private metadata: Early Reminder before due date, e.g. 15m, 1h, 2d, 1w, 1mo, or clear")
+    c.add_argument("--remind-when-messaging", metavar="HANDLES", help="Private metadata: messaging trigger for comma-separated phone numbers/emails")
     js(c)
 
     c = sub.add_parser(
@@ -10568,6 +10678,7 @@ def main():
     c.add_argument("--radius", type=float, default=100.0, help="Guarded metadata: location alarm radius in meters")
     c.add_argument("--proximity", choices=["arriving", "leaving"], default="arriving", help="Guarded metadata: location alarm trigger direction")
     c.add_argument("--address", help=argparse.SUPPRESS)
+    c.add_argument("--remind-when-messaging", metavar="HANDLES", help="Private metadata: messaging trigger for comma-separated phone numbers/emails")
     js(c)
 
     c = sub.add_parser("delete", help="Delete a reminder")

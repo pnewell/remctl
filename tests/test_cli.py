@@ -3207,6 +3207,136 @@ class CliTests(unittest.TestCase):
             "count": -1,
         })
 
+    def test_contact_handles_from_row_decodes_phones_and_emails(self):
+        blob = bytes.fromhex(
+            "62706c6973743030d401020304050623265924617263686976"
+            "657258246f626a656374735424746f70582476657273696f6e"
+            "5f100f4e534b657965644172636869766572a807080f14151b"
+            "1f2055246e756c6cd3090a0b0c0d0e5624636c61737356656d"
+            "61696c735670686f6e6573800780058002d2091011125a4e53"
+            "2e6f626a656374738004a11380035c2b313535353535353031"
+            "3233d2161718195824636c61737365735a24636c6173736e61"
+            "6d65a2191a574e534172726179584e534f626a656374d20910"
+            "1c1d8004a11e80065f1010616c6578406578616d706c652e63"
+            "6f6dd216172122a2221a5f101852454d436f6e746163745265"
+            "70726573656e746174696f6ed1242554726f6f748001120001"
+            "86a000080011001b0024002900320044004d0053005a006100"
+            "68006f007100730075007a008500870089008b0098009d00a6"
+            "00b100b400bc00c500ca00cc00ce00d000e300e800eb010601"
+            "09010e01100000000000000201000000000000002700000000"
+            "000000000000000000000115"
+        )
+        self.assertEqual(
+            self.remctl.contact_handles_from_row({"ZCONTACTHANDLES": blob}),
+            {"phones": ["+15555550123"], "emails": ["alex@example.com"]},
+        )
+        self.assertIsNone(self.remctl.contact_handles_from_row({"ZCONTACTHANDLES": None}))
+
+    def test_apply_private_changes_sets_contact_handles(self):
+        args = SimpleNamespace(
+            private=True,
+            private_metadata=False,
+            tags=None,
+            url=None,
+            section=None,
+            section_id=None,
+            new_section=None,
+            subtask=None,
+            image=None,
+            flag=False,
+            flagged=None,
+            urgent=None,
+            early_reminder=None,
+            location_title=None,
+            latitude=None,
+            longitude=None,
+            remind_when_messaging="+15555550123, alex@example.com",
+        )
+        with (
+            mock.patch.object(self.remctl, "private_available", return_value=True),
+            mock.patch.object(
+                self.remctl,
+                "private_action",
+                return_value={"status": "updated", "action": "set_contact_handles"},
+            ) as private_action,
+        ):
+            result = self.remctl.apply_private_changes("PARENT-ID", args)
+
+        self.assertEqual(private_action.call_args.args[0], {
+            "action": "set_contact_handles",
+            "id": "PARENT-ID",
+            "phones": ["+15555550123"],
+            "emails": ["alex@example.com"],
+        })
+        self.assertEqual(result[0]["action"], "set_contact_handles")
+
+    def test_validate_private_args_rejects_empty_messaging_handles(self):
+        args = SimpleNamespace(remind_when_messaging=" , ")
+        with (
+            contextlib.redirect_stdout(io.StringIO()),
+            contextlib.redirect_stderr(io.StringIO()) as stderr,
+        ):
+            with self.assertRaises(SystemExit):
+                self.remctl.validate_private_args(args)
+        self.assertIn("phone number or email", stderr.getvalue())
+
+    def test_contact_handles_from_row_returns_none_for_malformed_blob(self):
+        self.assertIsNone(
+            self.remctl.contact_handles_from_row({"ZCONTACTHANDLES": b"not a plist"})
+        )
+
+    def test_contact_handles_from_row_returns_none_for_missing_column(self):
+        self.assertIsNone(
+            self.remctl.contact_handles_from_row({"ZCONTACTHANDLES": None})
+        )
+
+    def test_apply_private_changes_clears_contact_handles(self):
+        args = SimpleNamespace(
+            private=True,
+            private_metadata=False,
+            tags=None,
+            url=None,
+            section=None,
+            section_id=None,
+            new_section=None,
+            subtask=None,
+            image=None,
+            flag=False,
+            flagged=None,
+            urgent=None,
+            early_reminder=None,
+            location_title=None,
+            latitude=None,
+            longitude=None,
+            remind_when_messaging="clear",
+        )
+        with (
+            mock.patch.object(self.remctl, "private_available", return_value=True),
+            mock.patch.object(
+                self.remctl,
+                "private_action",
+                return_value={"status": "updated", "action": "set_contact_handles"},
+            ) as private_action,
+        ):
+            result = self.remctl.apply_private_changes("PARENT-ID", args)
+
+        self.assertEqual(private_action.call_args.args[0], {
+            "action": "set_contact_handles",
+            "id": "PARENT-ID",
+            "clear": True,
+        })
+        self.assertEqual(result[0]["action"], "set_contact_handles")
+
+    def test_validate_private_args_rejects_empty_messaging_string(self):
+        args = SimpleNamespace(remind_when_messaging="")
+        with (
+            contextlib.redirect_stdout(io.StringIO()),
+            contextlib.redirect_stderr(io.StringIO()) as stderr,
+        ):
+            with self.assertRaises(SystemExit):
+                self.remctl.validate_private_args(args)
+        self.assertIn("phone number or email", stderr.getvalue())
+
     def test_subtask_rejects_private_url_before_writing(self):
         with (
             contextlib.redirect_stdout(io.StringIO()),
@@ -5339,14 +5469,14 @@ class CliTests(unittest.TestCase):
             "ZREMINDER2 INTEGER, ZREMINDER3 INTEGER, ZHASHTAGLABEL INTEGER, ZMARKEDFORDELETION INTEGER, "
             "ZFILENAME TEXT, ZUTI TEXT, ZWIDTH INTEGER, ZHEIGHT INTEGER, ZURL TEXT, "
             "ZTIMEINTERVAL REAL, ZDATECOMPONENTSDATA BLOB, ZTITLE TEXT, ZLATITUDE REAL, "
-            "ZLONGITUDE REAL, ZRADIUS REAL, ZADDRESS TEXT, ZPROXIMITY INTEGER)"
+            "ZLONGITUDE REAL, ZRADIUS REAL, ZADDRESS TEXT, ZPROXIMITY INTEGER, ZPERSONID TEXT)"
         )
         db.executemany(
-            "INSERT INTO ZREMCDOBJECT VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            "INSERT INTO ZREMCDOBJECT VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
             [
-                (1, 25, None, None, 43, None, None, 0, "child.png", "public.png", 100, 100, None, None, None, None, None, None, None, None, None),
-                (2, 15, 43, 3, None, None, None, 0, None, None, None, None, None, None, None, None, None, None, None, None, None),
-                (3, 19, None, None, None, None, None, 0, None, None, None, None, None, -600, None, None, None, None, None, None, None),
+                (1, 25, None, None, 43, None, None, 0, "child.png", "public.png", 100, 100, None, None, None, None, None, None, None, None, None, None),
+                (2, 15, 43, 3, None, None, None, 0, None, None, None, None, None, None, None, None, None, None, None, None, None, None),
+                (3, 19, None, None, None, None, None, 0, None, None, None, None, None, -600, None, None, None, None, None, None, None, None),
             ],
         )
         parent = {

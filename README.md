@@ -211,6 +211,7 @@ remctl edit 23880 --private --early-reminder 1h
 remctl edit 23880 --private --early-reminder clear
 remctl edit 23880 --private --image ~/Desktop/mockup.png --flagged --urgent
 remctl edit 23880 --private --location-title "Apple Park" --latitude 37.3349 --longitude -122.0090 --radius 200
+remctl edit 23880 --private --remind-when-messaging "+15555550123,alex@example.com"
 remctl list-edit Projects --private --color '#FF8D28' --symbol education3
 remctl list-edit Projects --private --emoji 📌
 remctl list-create "Groceries" --private --groceries --grocery-locale en_US
@@ -243,9 +244,10 @@ Private mode covers the parts of Reminders that EventKit does not expose:
 
 A few rules keep this safe and predictable:
 
-- `edit -l/--list` and `edit --list-id` are normal EventKit moves for ordinary reminders. Parent reminders with subtasks use a verified ReminderKit clone-delete fallback because EventKit rejects moving only the parent.
+- `edit -l/--list` and `edit --list-id` are normal EventKit moves for ordinary reminders. Parent reminders with subtasks use in-place reassignment with `setListID:` because EventKit rejects moving only the parent.
 - Shared-list assignment uses `--private --assign USER`; `USER` may be a unique name, email/phone address, numeric sharee ID, object UUID, or `me`. Use `remctl sharees LIST --json` before assigning when scripting.
 - Location alarms still require the `--private` guardrail, but RemCTL saves them through `remctl-bridge` because EventKit structured-location alarms persist correctly on current macOS.
+- `edit --private --remind-when-messaging "HANDLES"` sets Reminders' "Remind me when messaging" trigger from comma-separated phone numbers and emails. EventKit has no equivalent, so it only goes through `remctl-private`, which stores the handles on the reminder's `contactHandles`. Verify with `info --json`, which reports them under `contactHandles`. Pass `clear` to remove the trigger.
 - `--private --url` and rich subtask URLs must be public `http` or `https` hosts. Loopback, `.local`, private, link-local, multicast, reserved, and unresolved hosts are rejected before writing.
 - Rich-link and image edit operations are additive. RemCTL can add them, but it does not remove or replace existing rich links/images.
 - `--early-reminder` accepts values such as `15m`, `1h`, `2d`, `1w`, `1mo`, or `clear`. Non-clear values require a due date.

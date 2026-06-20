@@ -176,6 +176,7 @@ def serialize_reminder(
     rich_link_resolver=None,
     fallback_subtask_count=None,
     fallback_hashtags=None,
+    contact_handles_fn=None,
 ):
     """Convert a reminder row to a JSON-serializable dict."""
     subtask_counts = subtask_counts or {}
@@ -239,6 +240,9 @@ def serialize_reminder(
     if early_reminders:
         reminder["earlyReminder"] = early_reminders[0]
         reminder["earlyReminders"] = early_reminders
+    contact_handles = contact_handles_fn(row) if contact_handles_fn is not None else None
+    if contact_handles:
+        reminder["contactHandles"] = contact_handles
     if row["ZCKIDENTIFIER"]:
         reminder["deepLink"] = f"x-apple-reminderkit://REMCDReminder/{row['ZCKIDENTIFIER']}"
     return reminder
@@ -254,6 +258,7 @@ def serialize_reminders(
     rich_link_resolver=None,
     fallback_subtask_count=None,
     fallback_hashtags=None,
+    contact_handles_fn=None,
 ):
     """Convert reminder rows with shared preloaded metadata."""
     subtask_counts, hashtags = preload_extras(db, [row["Z_PK"] for row in rows]) if db else ({}, {})
@@ -270,6 +275,7 @@ def serialize_reminders(
             rich_link_resolver=rich_link_resolver,
             fallback_subtask_count=fallback_subtask_count,
             fallback_hashtags=fallback_hashtags,
+            contact_handles_fn=contact_handles_fn,
         )
         for row in rows
     ]
