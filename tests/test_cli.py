@@ -4575,7 +4575,7 @@ class CliTests(unittest.TestCase):
         self.assertEqual(payload["resolvedList"]["id"], 9)
         self.assertEqual(payload["resolvedList"]["method"], "id")
 
-    def test_cmd_edit_moves_parent_with_subtasks_by_verified_clone_delete(self):
+    def test_cmd_edit_moves_parent_with_subtasks_through_reminderkit(self):
         reminder = dict(self._FAKE_REMINDER)
         reminder["Z_PK"] = 1
         reminder["ZLIST"] = 7
@@ -4604,32 +4604,30 @@ class CliTests(unittest.TestCase):
             mock.patch.object(self.remctl, "subtask_rows_for_parent_move", return_value=children) as subtask_rows,
             mock.patch.object(
                 self.remctl,
-                "clone_reminder_tree_to_list_or_die",
+                "move_reminder_to_list",
                 return_value={
                     "status": "updated",
-                    "id": 42,
+                    "id": 1,
                     "oldId": 1,
                     "list": "Projects",
-                    "objectUUID": "NEW-REMINDER",
+                    "objectUUID": "REMINDER-UUID",
                     "subtasksMoved": 2,
-                    "method": "clone-delete",
-                    "delete": {"status": "deleted"},
+                    "method": "reminderkit",
                 },
-            ) as clone_move,
+            ) as move,
             mock.patch.object(self.remctl, "bridge_call") as bridge_call,
             contextlib.redirect_stdout(io.StringIO()) as stdout,
         ):
             self.remctl.cmd_edit(args)
 
         subtask_rows.assert_called_once_with(mock.ANY, reminder)
-        clone_move.assert_called_once_with(mock.ANY, reminder, target, children)
+        move.assert_called_once_with(mock.ANY, reminder, target)
         bridge_call.assert_not_called()
         payload = json.loads(stdout.getvalue())
-        self.assertEqual(payload["id"], 42)
-        self.assertEqual(payload["oldId"], 1)
-        self.assertEqual(payload["method"], "clone-delete")
+        self.assertEqual(payload["id"], 1)
+        self.assertNotIn("oldId", payload)
+        self.assertEqual(payload["method"], "reminderkit")
         self.assertEqual(payload["subtasksMoved"], 2)
-        self.assertTrue(payload["originalDeleted"])
         self.assertEqual(payload["resolvedList"]["id"], 9)
 
     def test_cmd_edit_rejects_parent_with_subtasks_move_plus_other_edits(self):
@@ -4654,16 +4652,174 @@ class CliTests(unittest.TestCase):
                 return_value={"id": 9, "title": "Projects", "requested": "9", "method": "id", "objectUUID": "LIST-UUID"},
             ),
             mock.patch.object(self.remctl, "subtask_rows_for_parent_move", return_value=[{"Z_PK": 2, "ZCKIDENTIFIER": "CHILD-1"}]),
-            mock.patch.object(self.remctl, "clone_reminder_tree_to_list_or_die") as clone_move,
+            mock.patch.object(self.remctl, "move_reminder_to_list") as move,
             mock.patch.object(self.remctl, "bridge_call") as bridge_call,
             contextlib.redirect_stderr(io.StringIO()) as stderr,
             self.assertRaises(SystemExit),
         ):
             self.remctl.cmd_edit(args)
 
-        clone_move.assert_not_called()
+        move.assert_not_called()
         bridge_call.assert_not_called()
         self.assertIn("cannot currently be combined with other edits", stderr.getvalue())
+
+    def test_list_move_rejects_same_source_and_destination(self):
+        args = SimpleNamespace(source="A", from_id=None, destination=None, to_id=5, skip_completed=False, force=True, dry_run=False, json=True)
+        ref = {"id": 5, "title": "A", "objectUUID": "U"}
+        with (
+            mock.patch.object(self.remctl, "open_db", return_value=object()),
+            mock.patch.object(self.remctl, "resolve_required_list_target_or_die", return_value=ref),
+            contextlib.redirect_stderr(io.StringIO()) as stderr,
+            self.assertRaises(SystemExit),
+        ):
+            self.remctl.cmd_list_move(args)
+
+        self.assertIn("source and destination are the same list", stderr.getvalue())
+
+    def test_list_move_dry_run_does_not_move(self):
+        args = SimpleNamespace(source="A", from_id=None, destination="B", to_id=None, skip_completed=False, force=False, dry_run=True, json=True)
+        refs = iter([{"id": 1, "title": "A", "objectUUID": "UA"}, {"id": 2, "title": "B", "objectUUID": "UB"}])
+        rows = [{"Z_PK": 10, "ZTITLE": "One"}, {"Z_PK": 11, "ZTITLE": "Two"}]
+        with (
+            mock.patch.object(self.remctl, "open_db", return_value=object()),
+            mock.patch.object(self.remctl, "resolve_required_list_target_or_die", side_effect=lambda *a, **k: next(refs)),
+            mock.patch.object(self.remctl, "q_reminders", return_value=rows),
+            mock.patch.object(self.remctl, "move_reminder_to_list") as move,
+            contextlib.redirect_stdout(io.StringIO()) as stdout,
+        ):
+            self.remctl.cmd_list_move(args)
+
+        move.assert_not_called()
+        payload = json.loads(stdout.getvalue())
+        self.assertEqual(payload["status"], "dry-run")
+        self.assertEqual(payload["count"], 2)
+
+    def test_list_move_collects_per_item_failures(self):
+        args = SimpleNamespace(source="A", from_id=None, destination="B", to_id=None, skip_completed=False, force=True, dry_run=False, json=True)
+        refs = iter([{"id": 1, "title": "A", "objectUUID": "UA"}, {"id": 2, "title": "B", "objectUUID": "UB"}])
+        rows = [{"Z_PK": 10, "ZTITLE": "Ok"}, {"Z_PK": 11, "ZTITLE": "Bad"}]
+
+        def fake_move(db, r, dest, *, exit_on_error=True):
+            if r["Z_PK"] == 11:
+                return {"status": "error", "message": "boom"}
+            return {"status": "updated", "id": r["Z_PK"], "method": "eventkit", "subtasksMoved": 0}
+
+        with (
+            mock.patch.object(self.remctl, "open_db", return_value=object()),
+            mock.patch.object(self.remctl, "resolve_required_list_target_or_die", side_effect=lambda *a, **k: next(refs)),
+            mock.patch.object(self.remctl, "q_reminders", return_value=rows),
+            mock.patch.object(self.remctl, "move_reminder_to_list", side_effect=fake_move),
+            contextlib.redirect_stdout(io.StringIO()) as stdout,
+            contextlib.redirect_stderr(io.StringIO()),
+            self.assertRaises(SystemExit),
+        ):
+            self.remctl.cmd_list_move(args)
+
+        payload = json.loads(stdout.getvalue())
+        self.assertEqual(payload["status"], "partial")
+        self.assertEqual(payload["moved"], 1)
+        self.assertEqual(len(payload["failed"]), 1)
+        self.assertEqual(payload["failed"][0]["id"], 11)
+
+    def test_list_move_happy_path_via_bridge(self):
+        src_ref = {"id": 1, "title": "Inbox", "objectUUID": "UA"}
+        dst_ref = {"id": 2, "title": "Project X", "objectUUID": "UB"}
+        rows = [
+            {"Z_PK": 10, "ZTITLE": "Task One", "ZCKIDENTIFIER": "CK-1", "ZLIST": 1},
+            {"Z_PK": 11, "ZTITLE": "Task Two", "ZCKIDENTIFIER": "CK-2", "ZLIST": 1},
+        ]
+        args = SimpleNamespace(
+            source="Inbox", from_id=None, destination="Project X", to_id=None,
+            skip_completed=False, force=True, dry_run=False, json=True,
+        )
+
+        def fake_resolve(db, *, name=None, list_id=None):
+            return src_ref if name == "Inbox" else dst_ref
+
+        with (
+            mock.patch.object(self.remctl, "open_db", return_value=object()),
+            mock.patch.object(self.remctl, "resolve_required_list_target_or_die", side_effect=fake_resolve),
+            mock.patch.object(self.remctl, "q_reminders", return_value=rows) as q_rem,
+            mock.patch.object(self.remctl, "subtask_rows_for_parent_move", return_value=[]),
+            mock.patch.object(self.remctl, "bridge_call", return_value={"status": "updated"}) as bridge_call,
+            mock.patch.object(self.remctl, "bridge_available", return_value=True),
+            mock.patch.object(self.remctl, "private_available", return_value=True),
+            contextlib.redirect_stdout(io.StringIO()) as stdout,
+        ):
+            self.remctl.cmd_list_move(args)
+
+        q_rem.assert_called_once_with(mock.ANY, list_pk=1, completed=True, top_level=True, limit=10000)
+        self.assertEqual(bridge_call.call_count, 2)
+        payload = json.loads(stdout.getvalue())
+        self.assertEqual(payload["status"], "moved")
+        self.assertEqual(payload["moved"], 2)
+        self.assertEqual(len(payload["items"]), 2)
+        for item in payload["items"]:
+            self.assertIn("id", item)
+            self.assertEqual(item["method"], "eventkit")
+            self.assertEqual(item["subtasksMoved"], 0)
+            self.assertNotIn("oldId", item)
+
+    def test_list_move_skip_completed_passes_false_to_q_reminders(self):
+        src_ref = {"id": 1, "title": "Inbox", "objectUUID": "UA"}
+        dst_ref = {"id": 2, "title": "Project X", "objectUUID": "UB"}
+        args = SimpleNamespace(
+            source="Inbox", from_id=None, destination="Project X", to_id=None,
+            skip_completed=True, force=True, dry_run=False, json=True,
+        )
+
+        def fake_resolve(db, *, name=None, list_id=None):
+            return src_ref if name == "Inbox" else dst_ref
+
+        with (
+            mock.patch.object(self.remctl, "open_db", return_value=object()),
+            mock.patch.object(self.remctl, "resolve_required_list_target_or_die", side_effect=fake_resolve),
+            mock.patch.object(self.remctl, "q_reminders", return_value=[]) as q_rem,
+            contextlib.redirect_stdout(io.StringIO()),
+        ):
+            self.remctl.cmd_list_move(args)
+
+        q_rem.assert_called_once_with(mock.ANY, list_pk=1, completed=False, top_level=True, limit=10000)
+
+    def test_move_reminder_to_list_eventkit_branch(self):
+        reminder = {"Z_PK": 10, "ZCKIDENTIFIER": "CK-10", "ZLIST": 1}
+        target = {"id": 2, "title": "Project X", "objectUUID": "LIST-UUID"}
+        with (
+            mock.patch.object(self.remctl, "subtask_rows_for_parent_move", return_value=[]),
+            mock.patch.object(self.remctl, "bridge_available", return_value=True),
+            mock.patch.object(self.remctl, "bridge_call", return_value={"status": "updated"}) as bridge_call,
+        ):
+            result = self.remctl.move_reminder_to_list(object(), reminder, target)
+
+        bridge_call.assert_called_once_with({"action": "update", "id": "CK-10", "listId": "LIST-UUID"})
+        self.assertEqual(result["status"], "updated")
+        self.assertEqual(result["id"], 10)
+        self.assertEqual(result["method"], "eventkit")
+        self.assertEqual(result["subtasksMoved"], 0)
+        self.assertNotIn("oldId", result)
+
+    def test_move_reminder_to_list_reminderkit_branch(self):
+        reminder = {"Z_PK": 20, "ZCKIDENTIFIER": "CK-20", "ZLIST": 1}
+        child = {"Z_PK": 21, "ZCKIDENTIFIER": "CK-21"}
+        target = {"id": 2, "title": "Project X", "objectUUID": "LIST-UUID"}
+        with (
+            mock.patch.object(self.remctl, "subtask_rows_for_parent_move", return_value=[child]),
+            mock.patch.object(self.remctl, "private_available", return_value=True),
+            mock.patch.object(self.remctl, "private_call", return_value={"status": "updated"}) as private_call,
+        ):
+            result = self.remctl.move_reminder_to_list(object(), reminder, target)
+
+        private_call.assert_called_once_with({
+            "action": "move_reminder_to_list",
+            "id": "CK-20",
+            "listId": "LIST-UUID",
+            "childIds": ["CK-21"],
+        })
+        self.assertEqual(result["status"], "updated")
+        self.assertEqual(result["id"], 20)
+        self.assertEqual(result["method"], "reminderkit")
+        self.assertEqual(result["subtasksMoved"], 1)
+        self.assertNotIn("oldId", result)
 
     def test_cmd_edit_resolves_private_section_against_destination_list(self):
         reminder = self._FAKE_REMINDER
