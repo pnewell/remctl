@@ -21,6 +21,11 @@
 - (id)fetchDefaultAccountWithError:(NSError **)error;
 @end
 
+@interface REMSmartListsDataView : NSObject
+- (instancetype)initWithStore:(REMStore *)store;
+- (id)fetchNonCustomSmartListWithSmartListType:(NSString *)smartListType createIfNeeded:(BOOL)createIfNeeded error:(NSError **)error;
+@end
+
 @interface REMSaveRequest : NSObject
 - (instancetype)initWithStore:(REMStore *)store;
 - (id)updateAccount:(id)account;
@@ -1324,26 +1329,34 @@ int main(int argc, const char * argv[]) {
             return 0;
         }
         if ([action isEqualToString:@"set_smart_list_pinned"]) {
-            NSString *smartListID = cmd[@"smartListId"];
-            if (![smartListID isKindOfClass:[NSString class]] || smartListID.length == 0) {
-                fail(@"smartListId is required");
-            }
             NSNumber *pinned = cmd[@"pinned"];
             if (![pinned isKindOfClass:[NSNumber class]]) {
                 fail(@"pinned is required");
             }
-            NSURL *objectURL = smartListURL(smartListID);
-            id objectID = [REMObjectID objectIDWithURL:objectURL];
-            if (!objectID) {
-                fail(@"Could not build ReminderKit smart list object ID");
-            }
+            NSString *smartListType = cmd[@"smartListType"];
+            NSString *smartListID = cmd[@"smartListId"];
             REMStore *store = [REMStore new];
             id smartList = nil;
-            if ([store respondsToSelector:@selector(fetchSmartListWithObjectID:error:)]) {
-                smartList = [store fetchSmartListWithObjectID:objectID error:&error];
-            }
-            if (!smartList) {
-                smartList = [store fetchCustomSmartListWithObjectID:objectID error:&error];
+            if ([smartListType isKindOfClass:[NSString class]] && smartListType.length > 0) {
+                // Built-in smart lists are not reachable by object ID; fetch them by type.
+                REMSmartListsDataView *dataView = [[REMSmartListsDataView alloc] initWithStore:store];
+                if (![dataView respondsToSelector:@selector(fetchNonCustomSmartListWithSmartListType:createIfNeeded:error:)]) {
+                    fail(@"ReminderKit does not support built-in smart list lookup on this OS");
+                }
+                smartList = [dataView fetchNonCustomSmartListWithSmartListType:smartListType createIfNeeded:NO error:&error];
+            } else if ([smartListID isKindOfClass:[NSString class]] && smartListID.length > 0) {
+                id objectID = [REMObjectID objectIDWithURL:smartListURL(smartListID)];
+                if (!objectID) {
+                    fail(@"Could not build ReminderKit smart list object ID");
+                }
+                if ([store respondsToSelector:@selector(fetchSmartListWithObjectID:error:)]) {
+                    smartList = [store fetchSmartListWithObjectID:objectID error:&error];
+                }
+                if (!smartList) {
+                    smartList = [store fetchCustomSmartListWithObjectID:objectID error:&error];
+                }
+            } else {
+                fail(@"smartListId or smartListType is required");
             }
             if (!smartList) {
                 fail(error.localizedDescription ?: @"Smart list not found");
@@ -1360,12 +1373,17 @@ int main(int argc, const char * argv[]) {
             if (![save saveSynchronouslyWithError:&error]) {
                 fail(error.localizedDescription ?: @"ReminderKit smart list pin save failed");
             }
-            output(@{
+            NSMutableDictionary *details = [NSMutableDictionary dictionaryWithDictionary:@{
                 @"status": @"updated",
                 @"action": action,
-                @"smartListId": smartListID,
                 @"pinned": @([pinned boolValue]),
-            });
+            }];
+            if (smartListType) {
+                details[@"smartListType"] = smartListType;
+            } else {
+                details[@"smartListId"] = smartListID;
+            }
+            output(details);
             return 0;
         }
         if ([action isEqualToString:@"categorize_grocery_items"]) {

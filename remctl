@@ -1585,6 +1585,15 @@ def q_smart_list_ckid(db, smart_list_pk):
     ).fetchone()
     return row["ZCKIDENTIFIER"] if row and row["ZCKIDENTIFIER"] else None
 
+
+def q_smart_list_type(db, smart_list_pk):
+    row = db.execute(
+        "SELECT ZSMARTLISTTYPE FROM ZREMCDBASELIST "
+        "WHERE Z_PK = ? AND ZMARKEDFORDELETION = 0 AND (Z_ENT = 4 OR ZSMARTLISTTYPE IS NOT NULL)",
+        (smart_list_pk,),
+    ).fetchone()
+    return row["ZSMARTLISTTYPE"] if row else None
+
 def q_list_exact_name_count(db, name):
     row = db.execute(
         "SELECT COUNT(*) AS count FROM ZREMCDBASELIST "
@@ -4188,11 +4197,17 @@ def apply_private_group_delete(db, group_ref, a):
 
 def apply_private_smart_list_pinned(db, smart_list_pk, a, pinned):
     require_private_metadata(a)
-    ckid = q_smart_list_ckid(db, smart_list_pk)
-    if not ckid:
-        print("Error: target smart list has no stable CloudKit identifier.", file=sys.stderr)
-        sys.exit(1)
-    result = private_call({"action": "set_smart_list_pinned", "smartListId": ckid, "pinned": bool(pinned)})
+    smart_list_type = q_smart_list_type(db, smart_list_pk)
+    if smart_list_type and smart_list_type != CUSTOM_SMART_LIST_TYPE:
+        # Built-in smart lists are pinned by type; they are not reachable by object ID.
+        payload = {"action": "set_smart_list_pinned", "smartListType": smart_list_type, "pinned": bool(pinned)}
+    else:
+        ckid = q_smart_list_ckid(db, smart_list_pk)
+        if not ckid:
+            print("Error: target smart list has no stable CloudKit identifier.", file=sys.stderr)
+            sys.exit(1)
+        payload = {"action": "set_smart_list_pinned", "smartListId": ckid, "pinned": bool(pinned)}
+    result = private_call(payload)
     if result and result.get("status") == "updated":
         return result
     message = result.get("message") if isinstance(result, dict) else "private helper failed"

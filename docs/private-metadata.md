@@ -137,7 +137,7 @@ Important limits:
 - `--symbol` writes one of the official Reminders emblem names printed by `list-symbols`. Reminders' own picker uses private names such as `education3`; arbitrary SF Symbol strings are rejected because they fall back to the default icon in Reminders.
 - `--emoji` writes a Reminders emoji badge for standard emoji such as `🥶` or `📌`.
 - `list-edit` resolves by exact list name, then safe normalized matching; if a duplicate match is ambiguous, use `--list-id`.
-- `list-pin` and `list-unpin` can target regular lists or smart lists by name. If a name matches both, use `--list-id` or `--smart-list-id`.
+- `list-pin` and `list-unpin` can target regular lists, custom smart lists, or built-in smart lists (`Today`, `Scheduled`, `All`, `Flagged`, `Completed`, `Assigned`, `Urgent`) by name. If a name matches both a list and a smart list, use `--list-id` or `--smart-list-id`. Built-in smart lists are pinned by type because they are not reachable by object ID; custom smart lists are pinned by object ID.
 - Verify regular list pinning with `lists --json` and smart-list pinning with `smart-lists --json`. Smart-list rows can leave `ZISPINNEDBYCURRENTUSER` empty while updating `ZPINNEDDATE`; RemCTL reports `pinned: true` when the smart-list pin date is positive.
 
 ## List Group Examples

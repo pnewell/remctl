@@ -2214,7 +2214,7 @@ class CliTests(unittest.TestCase):
                 self.remctl.cmd_list_pin(pin_args)
             self.assertEqual(
                 pin_call.call_args.args[0],
-                {"action": "set_smart_list_pinned", "smartListId": "BUILTIN-1", "pinned": True},
+                {"action": "set_smart_list_pinned", "smartListType": "com.apple.reminders.smartlist.flagged", "pinned": True},
             )
             self.assertEqual(json.loads(stdout.getvalue())["kind"], "smart-list")
 
