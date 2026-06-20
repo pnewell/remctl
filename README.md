@@ -60,7 +60,7 @@ Full setup details live in [docs/installation.md](docs/installation.md).
 | See what is due | `today`, `upcoming`, `overdue` |
 | Browse reminders | `lists`, `groups`, `group-info`, `smart-lists`, `templates`, `template-info`, `show`, `search`, `flagged`, `urgent`, `info`, `subtasks`, `sharees` |
 | Create and edit | `add`, `edit`, `done`, `undone`, `delete`, `flag`, `unflag` |
-| Organize | `list-symbols`, `list-create`, `list-edit`, `list-pin`, `list-unpin`, `list-rename`, `list-delete`, `group-create`, `group-edit`, `group-delete`, `smart-list-create`, `smart-list-edit`, `smart-list-delete`, `template-create`, `template-apply`, `template-delete`, `sections`, `tags` |
+| Organize | `list-symbols`, `list-create`, `list-edit`, `list-pin`, `list-unpin`, `default-list`, `list-rename`, `list-delete`, `group-create`, `group-edit`, `group-delete`, `smart-list-create`, `smart-list-edit`, `smart-list-delete`, `template-create`, `template-apply`, `template-delete`, `sections`, `tags` |
 | Share data | `export`, `import`, `link`, `open`, `--json`, `--format table` on tabular read commands |
 | Set up the Mac | `onboard`, `permissions`, `doctor`, `setup`, `completion` |
 
@@ -219,6 +219,8 @@ remctl list-pin "Project X" --private
 remctl list-pin "Flagged" --private
 remctl list-unpin --list-id 144 --private
 remctl list-unpin --smart-list-id 4 --private
+remctl default-list "Projects" --private
+remctl default-list --show
 remctl group-create "Writing" --private --add-list Editorial
 remctl group-edit "Writing" --private --new-name "Drafts" --add-list Ideas --remove-list Socials
 remctl group-edit "Writing" --private --move-list Ideas --last
@@ -353,7 +355,7 @@ For shared-list assignments, call `remctl sharees LIST --json` first. `--assign`
 
 Agents should pass deterministic due dates, using `YYYY-MM-DD` for all-day reminders and `YYYY-MM-DD HH:MM` for timed reminders after resolving the user's request in their timezone. If a due date is invalid, RemCTL exits before writing and emits a structured `invalid_due_date` JSON error on stderr with examples. Retry with a corrected date; do not create a reminder first and patch the due date afterward.
 
-List names are resolved conservatively: exact match first, then case-insensitive match, then a normalized fallback that can handle decorative prefixes such as emoji. If more than one list matches, RemCTL fails before writing and asks for `--list-id`. Commands that target lists use the same rule: pass a name, or use `--list-id` for exact agent-safe targeting on `show`, `add`, `edit`, `link`, `export`, `list-edit`, `list-pin`, `list-unpin`, `list-rename`, `list-delete`, group membership/order edits, and smart-list list filters. Group commands target groups by name or `--group-id`; write commands that need a real list reject groups and name the child lists you can target. `list-create --private --group-id` is available when group names collide. `list-pin` and `list-unpin` can also target smart lists by name or `--smart-list-id`.
+List names are resolved conservatively: exact match first, then case-insensitive match, then a normalized fallback that can handle decorative prefixes such as emoji. If more than one list matches, RemCTL fails before writing and asks for `--list-id`. Commands that target lists use the same rule: pass a name, or use `--list-id` for exact agent-safe targeting on `show`, `add`, `edit`, `link`, `export`, `list-edit`, `list-pin`, `list-unpin`, `default-list`, `list-rename`, `list-delete`, group membership/order edits, and smart-list list filters. Group commands target groups by name or `--group-id`; write commands that need a real list reject groups and name the child lists you can target. `list-create --private --group-id` is available when group names collide. `list-pin` and `list-unpin` can also target smart lists by name or `--smart-list-id`.
 
 Do not mutate the Reminders SQLite database. Use RemCTL commands or EventKit.
 

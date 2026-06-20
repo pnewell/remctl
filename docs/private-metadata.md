@@ -30,6 +30,7 @@ Verified on macOS/iCloud sync:
 - location alarms: `edit ID --private --location-title "Apple Park" --latitude 37.3349 --longitude -122.0090` (guarded by `--private`, saved through `remctl-bridge`)
 - list appearance metadata: `list-create "Projects" --private --symbol education3`, `list-edit Projects --private --color '#FF8D28' --emoji 📌`
 - list and smart-list pin state: `list-pin "Project X" --private`, `list-pin "Flagged" --private`, `list-unpin --smart-list-id 4 --private`
+- default list for new reminders: `default-list "Projects" --private`, `default-list --list-id 4 --private`, read with `default-list --show`
 - list groups: `group-create "Writing" --private --add-list Editorial`, `list-create "Ideas" --private --group Writing`, `group-edit "Writing" --private --add-list Ideas --remove-list Socials`, `group-edit "Writing" --private --move-list Ideas --last`, and `group-delete "Writing" --private --force`
 - custom smart lists with verified materializing Reminders filters: `smart-list-create "Flagged Review" --private --flagged`, `smart-list-create "Priority or Today" --private --match any --priority high,medium --date today`, `smart-list-create "Projects Today" --private --include-list Projects --date today --date-today-include-past-due`, and exact custom smart-list cleanup via `smart-list-delete "Flagged Review" --private --force`
 - Reminders templates: `template-create "Packing Template" --from-list Packing --private`, `template-apply "Packing Template" --private`, and exact cleanup via `template-delete "Packing Template" --private --force`
@@ -139,6 +140,22 @@ Important limits:
 - `list-edit` resolves by exact list name, then safe normalized matching; if a duplicate match is ambiguous, use `--list-id`.
 - `list-pin` and `list-unpin` can target regular lists or smart lists by name. If a name matches both, use `--list-id` or `--smart-list-id`.
 - Verify regular list pinning with `lists --json` and smart-list pinning with `smart-lists --json`. Smart-list rows can leave `ZISPINNEDBYCURRENTUSER` empty while updating `ZPINNEDDATE`; RemCTL reports `pinned: true` when the smart-list pin date is positive.
+
+## Default List Examples
+
+```bash
+remctl default-list --show
+remctl default-list "Projects" --private
+remctl default-list --list-id 4 --private
+```
+
+`default-list --show` reads the current default through ReminderKit's `fetchDefaultListWithError:` and needs no `--private`. Setting writes `preferredDefaultListID` in the `com.apple.remindd` suite through `REMDaemonUserDefaults.setPreferredDefaultListID:`, after `REMStore.fetchEligibleDefaultListsWithError:` confirms the target is eligible. RemCTL reads back through `fetchDefaultListWithError:` with a short retry loop to confirm the write took.
+
+Important limits:
+
+- Only regular lists in eligible accounts are accepted. Smart lists and lists in ineligible accounts are rejected by `fetchEligibleDefaultListsWithError:` before the write is attempted.
+- To verify the change, run `default-list --show` or create a reminder with no list and check where it lands.
+- The preference is stored in the daemon defaults suite (`com.apple.remindd`). Whether it syncs across devices depends on the daemon and account configuration.
 
 ## List Group Examples
 
@@ -252,6 +269,7 @@ remctl group-edit "Writing" --move-list Ideas --last
 remctl group-delete "Writing" --force
 remctl template-create "Packing Template" --from-list Packing
 remctl template-apply "Packing Template"
+remctl default-list "Projects"
 ```
 
 These fail because they would otherwise look successful while silently dropping private metadata.

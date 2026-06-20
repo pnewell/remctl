@@ -1756,6 +1756,82 @@ class CliTests(unittest.TestCase):
         private_call.assert_not_called()
         self.assertIn("--private", stderr.getvalue())
 
+    def test_default_list_set_uses_private_helper(self):
+        db = self._list_db(["Project X"])
+        args = SimpleNamespace(name="Project X", list_id=None, show=False, private=True, json=True)
+        try:
+            with (
+                mock.patch.object(self.remctl, "open_db", return_value=db),
+                mock.patch.object(self.remctl, "private_available", return_value=True),
+                mock.patch.object(
+                    self.remctl,
+                    "private_call",
+                    return_value={"status": "updated", "name": "Project X"},
+                ) as set_call,
+                contextlib.redirect_stdout(io.StringIO()) as stdout,
+            ):
+                self.remctl.cmd_default_list(args)
+            self.assertEqual(
+                set_call.call_args.args[0],
+                {"action": "set_default_list", "listId": "CK-1"},
+            )
+            self.assertEqual(json.loads(stdout.getvalue())["name"], "Project X")
+        finally:
+            db.close()
+
+    def test_default_list_set_rejects_without_private_before_helper(self):
+        db = self._list_db(["Project X"])
+        args = SimpleNamespace(name="Project X", list_id=None, show=False, private=False, json=True)
+        try:
+            with (
+                mock.patch.object(self.remctl, "open_db", return_value=db),
+                mock.patch.object(self.remctl, "private_available") as private_available,
+                mock.patch.object(self.remctl, "private_call") as private_call,
+                contextlib.redirect_stderr(io.StringIO()) as stderr,
+                self.assertRaises(SystemExit),
+            ):
+                self.remctl.cmd_default_list(args)
+        finally:
+            db.close()
+        private_available.assert_not_called()
+        private_call.assert_not_called()
+        self.assertIn("--private", stderr.getvalue())
+
+    def test_default_list_show_reads_without_private(self):
+        args = SimpleNamespace(name=None, list_id=None, show=True, private=False, json=True)
+        with (
+            mock.patch.object(
+                self.remctl,
+                "read_default_list",
+                return_value={"name": "Reminders", "id": "x-apple-reminderkit://REMCDList/uuid"},
+            ),
+            contextlib.redirect_stdout(io.StringIO()) as stdout,
+        ):
+            self.remctl.cmd_default_list(args)
+        self.assertEqual(
+            json.loads(stdout.getvalue()),
+            {"defaultList": "Reminders", "id": "x-apple-reminderkit://REMCDList/uuid"},
+        )
+
+    def test_default_list_show_rejects_conflicting_arguments(self):
+        args = SimpleNamespace(name="X", list_id=None, show=True, private=False, json=True)
+        with (
+            contextlib.redirect_stderr(io.StringIO()) as stderr,
+            self.assertRaises(SystemExit),
+        ):
+            self.remctl.cmd_default_list(args)
+        self.assertIn("--show takes no other arguments", stderr.getvalue())
+
+    def test_default_list_show_emits_json_error_on_failure(self):
+        args = SimpleNamespace(name=None, list_id=None, show=True, private=False, json=True)
+        with (
+            mock.patch.object(self.remctl, "read_default_list", return_value=None),
+            contextlib.redirect_stderr(io.StringIO()) as stderr,
+            self.assertRaises(SystemExit),
+        ):
+            self.remctl.cmd_default_list(args)
+        self.assertIn("Could not read the default list", stderr.getvalue())
+
     def test_add_help_exposes_urgent_creation_flag(self):
         with (
             mock.patch.object(sys, "argv", ["remctl", "add", "--help"]),
