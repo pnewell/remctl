@@ -13,7 +13,7 @@ RemCTL is a power-user Apple Reminders CLI. It reads the local Reminders CoreDat
 - Prefer JSON for automation and verification: `remctl today --json`, `remctl show Work --json`, `remctl info <id> --json`.
 - Never write directly to the Reminders SQLite database.
 - Do not use `--via-eventkit` by default. It is a limited read-only fallback for `show`, `search`, `today`, and `upcoming` when Full Disk Access blocks a basic read and the task can tolerate missing Reminders metadata.
-- For private reminder metadata, use regular `add` or `edit` with `--private`; for private list appearance, Groceries mode, or regular/smart-list pin state, use `list-create --private`, `list-edit --private`, `list-pin --private`, or `list-unpin --private`; for list groups, use `group-create`, `group-edit`, `list-create --private --group`, or `group-delete` with `--private`; for custom smart lists, use `smart-list-create`, `smart-list-edit`, or `smart-list-delete` with `--private`; for Reminders templates, use `template-create`, `template-apply`, or `template-delete` with `--private`. Do not use raw database mutation.
+- For private reminder metadata, use regular `add` or `edit` with `--private`; for private list appearance, Groceries mode, or regular/smart-list pin state, use `list-create --private`, `list-edit --private`, `list-pin --private`, or `list-unpin --private`; for list groups, use `group-create`, `group-edit`, `list-create --private --group`, or `group-delete` with `--private`; for custom smart lists, use `smart-list-create`, `smart-list-edit`, or `smart-list-delete` with `--private`; to rename or delete a tag across every reminder, use `tag-rename` or `tag-delete` with `--private`; for Reminders templates, use `template-create`, `template-apply`, or `template-delete` with `--private`. Do not use raw database mutation.
 
 ## Agent Routing
 
@@ -29,6 +29,7 @@ Start by deciding the write path. Public EventKit writes are stable and do not n
 | List appearance, Groceries metadata, list or smart-list pin state | `list-create --private`, `list-edit --private`, `list-pin --private`, `list-unpin --private` | Yes | `lists --json` for list color/badge/Groceries/pin state, `smart-lists --json` for smart-list appearance/pin state |
 | List group create/rename/membership/order/delete | `group-create`, `group-edit`, `list-create --private --group`, `group-delete` | Yes | `group-info <group> --json`, `groups --json`, `lists --json`, and `show <group-or-child-list> --json` |
 | Custom smart list create/edit/delete | `smart-list-create`, `smart-list-edit`, `smart-list-delete` | Yes | `smart-lists --json` |
+| Rename or delete a tag across every reminder | `tag-rename`, `tag-delete` | Yes | `tags`, `info <id> --json` |
 | Saved Reminders templates | `templates`, `template-info`, `template-create`, `template-apply`, `template-delete` | Reads no; writes yes | `templates --json`, `template-info`, then `show <new list> --json` after apply |
 
 ## Limited EventKit Read Fallback

@@ -629,3 +629,33 @@ def encode_supported_filter_payload(payload) -> bytes:
     if not summary or not summary.get("supported") or summary.get("kind") == "all":
         raise SmartListFilterError("Unsupported smart list filter shape.")
     return json.dumps(payload, separators=(",", ":"), ensure_ascii=False).encode("utf-8")
+
+
+def rewrite_filter_payload_tags(payload, old, new):
+    if not isinstance(payload, dict):
+        return payload, False
+    hashtags = payload.get("hashtags")
+    if not isinstance(hashtags, dict):
+        return payload, False
+    selected = hashtags.get("hashtags")
+    if not isinstance(selected, dict):
+        return payload, False
+    changed = False
+    for key in ("include", "exclude"):
+        names = selected.get(key)
+        if not isinstance(names, list):
+            continue
+        rewritten = []
+        for name in names:
+            if name != old:
+                rewritten.append(name)
+                continue
+            changed = True
+            if new is not None and new not in rewritten:
+                rewritten.append(new)
+        selected[key] = rewritten
+    if changed and not (selected.get("include") or selected.get("exclude")):
+        # Removing the last tag would leave an empty hashtag filter, the zero-filter
+        # shape the create path rejects; drop the hashtag filter instead.
+        payload.pop("hashtags", None)
+    return payload, changed

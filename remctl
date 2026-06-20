@@ -36,6 +36,7 @@ from remctl_smart_lists import (
     decode_smart_list_filter_blob,
     encode_supported_filter_payload,
     normalize_match_operation,
+    rewrite_filter_payload_tags,
 )
 
 try:
@@ -2112,6 +2113,22 @@ def q_hashtags(db, pk):
     return db.execute(
         "SELECT h.ZNAME FROM ZREMCDOBJECT o JOIN ZREMCDHASHTAGLABEL h "
         "ON o.ZHASHTAGLABEL = h.Z_PK WHERE o.ZREMINDER3 = ?", (pk,)
+    ).fetchall()
+
+
+def q_tag_exact_name_count(db, name):
+    row = db.execute(
+        "SELECT COUNT(*) AS count FROM ZREMCDHASHTAGLABEL WHERE ZNAME = ?", (name,)
+    ).fetchone()
+    return row["count"] if row else 0
+
+
+def q_reminders_with_tag(db, name):
+    return db.execute(
+        "SELECT DISTINCT r.Z_PK, r.ZCKIDENTIFIER, r.ZTITLE FROM ZREMCDOBJECT o "
+        "JOIN ZREMCDHASHTAGLABEL h ON o.ZHASHTAGLABEL = h.Z_PK "
+        "JOIN ZREMCDREMINDER r ON o.ZREMINDER3 = r.Z_PK "
+        "WHERE h.ZNAME = ? AND r.ZMARKEDFORDELETION = 0 ORDER BY r.Z_PK", (name,)
     ).fetchall()
 
 
@@ -6304,6 +6321,131 @@ def cmd_smart_list_delete(a):
     else:
         print(f"Deleted smart list: {safe_display(name)}")
 
+def rewrite_smart_list_filters_for_tag(db, old, new):
+    updated = []
+    for row in q_smart_lists(db):
+        if row["ZSMARTLISTTYPE"] != CUSTOM_SMART_LIST_TYPE:
+            continue
+        decoded = decode_smart_list_filter_blob(row["ZFILTERDATA"])
+        payload = decoded.get("payload")
+        if not isinstance(payload, dict):
+            continue
+        payload, changed = rewrite_filter_payload_tags(payload, old, new)
+        if not changed:
+            continue
+        request = {"action": "update_smart_list", "smartListId": row["ZCKIDENTIFIER"]}
+        try:
+            request["filterData"] = base64.b64encode(encode_supported_filter_payload(payload)).decode("ascii")
+        except SmartListFilterError:
+            print(
+                f"Warning: left smart list {smart_list_display_name(row)!r} unchanged; its filter no longer "
+                "encodes after the tag change. Review it in Reminders.",
+                file=sys.stderr,
+            )
+            continue
+        result = private_call(request)
+        if result and result.get("status") == "updated":
+            updated.append(smart_list_display_name(row))
+        else:
+            message = result.get("message") if isinstance(result, dict) else "private helper failed"
+            print(
+                f"Warning: failed to rewrite smart list {smart_list_display_name(row)!r}: {message}",
+                file=sys.stderr,
+            )
+    return updated
+
+def rewrite_tag_across_reminders(db, old, new):
+    rows = list(q_reminders_with_tag(db, old))
+    if not rows:
+        return [], []
+    payload = {
+        "action": "rewrite_reminder_hashtags",
+        "reminderIds": [row["ZCKIDENTIFIER"] for row in rows],
+        "removeTags": [old],
+        "addTags": [new] if new is not None else [],
+    }
+    result = private_call(payload)
+    if not result or result.get("status") != "updated":
+        message = result.get("message") if isinstance(result, dict) else "private helper failed"
+        print(f"Error: failed to rewrite tag across reminders: {message}", file=sys.stderr)
+        sys.exit(1)
+    rewritten_ids = [row["Z_PK"] for row in rows]
+    failures = result.get("failed", []) if isinstance(result.get("failed"), list) else []
+    return rewritten_ids, failures
+
+def cmd_tag_rename(a):
+    if not private_metadata_enabled(a):
+        print("Error: tag-rename requires --private.", file=sys.stderr)
+        sys.exit(1)
+    old = a.old.lstrip("#").strip()
+    new = a.new.lstrip("#").strip()
+    if not old or not new:
+        print("Error: pass an existing tag and a new tag name.", file=sys.stderr)
+        sys.exit(1)
+    if old == new:
+        print("Error: new tag name matches the existing tag.", file=sys.stderr)
+        sys.exit(1)
+    require_private_metadata(a)
+    db = open_db()
+    if not q_tag_exact_name_count(db, old):
+        print(f"Error: tag not found: {old}", file=sys.stderr)
+        sys.exit(1)
+    if not getattr(a, "force", False):
+        count = len(q_reminders_with_tag(db, old))
+        ans = input(f"Rename tag '#{safe_display(old)}' to '#{safe_display(new)}' across {count} reminder{'s' if count != 1 else ''}? This cannot be undone. [y/N] ")
+        if ans.strip().lower() not in ("y", "yes"):
+            print("Aborted.")
+            return
+    rewritten, failures = rewrite_tag_across_reminders(db, old, new)
+    smart_lists = rewrite_smart_list_filters_for_tag(db, old, new)
+    if a.json:
+        out = {
+            "status": "renamed",
+            "old": old,
+            "new": new,
+            "remindersUpdated": len(rewritten),
+            "smartListsUpdated": smart_lists,
+        }
+        if failures:
+            out["failures"] = failures
+        print(json.dumps(out, ensure_ascii=False))
+    else:
+        print(f"Renamed tag: #{safe_display(old)} -> #{safe_display(new)} ({len(rewritten)} reminder{'s' if len(rewritten) != 1 else ''})")
+        for name in smart_lists:
+            print(f"  Updated smart list: {safe_display(name)}")
+
+def cmd_tag_delete(a):
+    if not private_metadata_enabled(a):
+        print("Error: tag-delete requires --private.", file=sys.stderr)
+        sys.exit(1)
+    name = a.name.lstrip("#").strip()
+    if not name:
+        print("Error: pass a tag name.", file=sys.stderr)
+        sys.exit(1)
+    require_private_metadata(a)
+    db = open_db()
+    if not q_tag_exact_name_count(db, name):
+        print(f"Error: tag not found: {name}", file=sys.stderr)
+        sys.exit(1)
+    if not a.force:
+        ans = input(f"Delete tag '#{safe_display(name)}' from all reminders? This cannot be undone. [y/N] ")
+        if ans.strip().lower() not in ("y", "yes"):
+            print("Aborted.")
+            return
+    rewritten, failures = rewrite_tag_across_reminders(db, name, None)
+    smart_lists = rewrite_smart_list_filters_for_tag(db, name, None)
+    if a.json:
+        print(json.dumps({
+            "status": "deleted",
+            "name": name,
+            "remindersUpdated": len(rewritten),
+            "smartListsUpdated": smart_lists,
+        }, ensure_ascii=False))
+    else:
+        print(f"Deleted tag: #{safe_display(name)} ({len(rewritten)} reminder{'s' if len(rewritten) != 1 else ''})")
+        for sl in smart_lists:
+            print(f"  Updated smart list: {safe_display(sl)}")
+
 def cmd_lists(a):
     db = open_db()
     rows = q_all_lists(db)
@@ -8850,6 +8992,8 @@ _remctl() {
         'smart-list-create:Create a private custom smart list'
         'smart-list-edit:Edit a private custom smart list'
         'smart-list-delete:Delete a private custom smart list'
+        'tag-rename:Rename a tag across every reminder'
+        'tag-delete:Delete a tag from every reminder'
         'template-create:Create a private Reminders template from an entire list'
         'template-apply:Create a list from a saved Reminders template'
         'template-delete:Delete a saved Reminders template'
@@ -9120,6 +9264,20 @@ _remctl() {
                 '--json[JSON output]'
             return
             ;;
+        tag-rename)
+            _arguments \
+                '--private[Use private ReminderKit tag rewrites]' \
+                '--force[Skip confirmation prompt]' \
+                '--json[JSON output]'
+            return
+            ;;
+        tag-delete)
+            _arguments \
+                '--private[Use private ReminderKit tag rewrites]' \
+                '--force[Skip confirmation prompt]' \
+                '--json[JSON output]'
+            return
+            ;;
         template-create)
             _arguments \
                 '--from-list[Source list name]:list:' \
@@ -9203,7 +9361,7 @@ BASH_COMPLETION = '''_remctl() {
     local cur prev commands
     cur="${COMP_WORDS[COMP_CWORD]}"
     prev="${COMP_WORDS[COMP_CWORD-1]}"
-    commands="lists groups group-info group-create group-edit group-delete smart-lists templates template-info show add done undone edit delete search today upcoming overdue flagged urgent flag unflag tags subtasks info sections sharees stats link open export import list-symbols list-create smart-list-create smart-list-edit smart-list-delete template-create template-apply template-delete list-edit list-pin list-unpin list-rename list-delete onboard doctor setup permissions completion"
+    commands="lists groups group-info group-create group-edit group-delete smart-lists templates template-info show add done undone edit delete search today upcoming overdue flagged urgent flag unflag tags subtasks info sections sharees stats link open export import list-symbols list-create smart-list-create smart-list-edit smart-list-delete tag-rename tag-delete template-create template-apply template-delete list-edit list-pin list-unpin list-rename list-delete onboard doctor setup permissions completion"
 
     local cmd="${COMP_WORDS[1]}"
     if [ "$cmd" = "add" ]; then
@@ -9262,6 +9420,12 @@ BASH_COMPLETION = '''_remctl() {
         return
     elif [ "$cmd" = "smart-list-delete" ]; then
         COMPREPLY=( $(compgen -W "--private --smart-list-id --force --json" -- "$cur") )
+        return
+    elif [ "$cmd" = "tag-rename" ]; then
+        COMPREPLY=( $(compgen -W "--private --force --json" -- "$cur") )
+        return
+    elif [ "$cmd" = "tag-delete" ]; then
+        COMPREPLY=( $(compgen -W "--private --force --json" -- "$cur") )
         return
     elif [ "$cmd" = "templates" ]; then
         COMPREPLY=( $(compgen -W "--json" -- "$cur") )
@@ -9339,6 +9503,8 @@ complete -c remctl -n "__fish_use_subcommand" -a list-create -d "Create a new li
 complete -c remctl -n "__fish_use_subcommand" -a smart-list-create -d "Create a private custom smart list"
 complete -c remctl -n "__fish_use_subcommand" -a smart-list-edit -d "Edit a private custom smart list"
 complete -c remctl -n "__fish_use_subcommand" -a smart-list-delete -d "Delete a private custom smart list"
+complete -c remctl -n "__fish_use_subcommand" -a tag-rename -d "Rename a tag across every reminder"
+complete -c remctl -n "__fish_use_subcommand" -a tag-delete -d "Delete a tag from every reminder"
 complete -c remctl -n "__fish_use_subcommand" -a template-create -d "Create a private Reminders template from an entire list"
 complete -c remctl -n "__fish_use_subcommand" -a template-apply -d "Create a list from a saved Reminders template"
 complete -c remctl -n "__fish_use_subcommand" -a template-delete -d "Delete a saved Reminders template"
@@ -9415,6 +9581,12 @@ complete -c remctl -n "__fish_seen_subcommand_from smart-list-delete" -l private
 complete -c remctl -n "__fish_seen_subcommand_from smart-list-delete" -l smart-list-id -d "Delete by numeric smart-list ID" -r
 complete -c remctl -n "__fish_seen_subcommand_from smart-list-delete" -l force -d "Skip confirmation prompt"
 complete -c remctl -n "__fish_seen_subcommand_from smart-list-delete" -l json -d "JSON output"
+complete -c remctl -n "__fish_seen_subcommand_from tag-rename" -l private -d "Use private ReminderKit tag rewrites"
+complete -c remctl -n "__fish_seen_subcommand_from tag-rename" -l force -d "Skip confirmation prompt"
+complete -c remctl -n "__fish_seen_subcommand_from tag-rename" -l json -d "JSON output"
+complete -c remctl -n "__fish_seen_subcommand_from tag-delete" -l private -d "Use private ReminderKit tag rewrites"
+complete -c remctl -n "__fish_seen_subcommand_from tag-delete" -l force -d "Skip confirmation prompt"
+complete -c remctl -n "__fish_seen_subcommand_from tag-delete" -l json -d "JSON output"
 complete -c remctl -n "__fish_seen_subcommand_from templates" -l json -d "JSON output"
 complete -c remctl -n "__fish_seen_subcommand_from sharees" -l list-id -d "Shared list by stable numeric ID" -r
 complete -c remctl -n "__fish_seen_subcommand_from sharees" -l json -d "JSON output"
@@ -10721,6 +10893,33 @@ def main():
     js(c)
 
     c = sub.add_parser(
+        "tag-rename",
+        help="Rename a tag across every reminder (private)",
+        description=(
+            "Rename a Reminders tag through unsupported private ReminderKit APIs. The tag is rewritten on "
+            "every reminder that carries it and in any custom smart-list filter that references it."
+        ),
+    )
+    c.add_argument("old", help="Existing tag name")
+    c.add_argument("new", help="New tag name")
+    c.add_argument("--private", action="store_true", help="Required for private ReminderKit tag rewrites")
+    c.add_argument("--force", action="store_true", help="Skip confirmation prompt")
+    js(c)
+
+    c = sub.add_parser(
+        "tag-delete",
+        help="Delete a tag from every reminder (private)",
+        description=(
+            "Remove a Reminders tag through unsupported private ReminderKit APIs. The tag is dropped from "
+            "every reminder that carries it and from any custom smart-list filter that references it."
+        ),
+    )
+    c.add_argument("name", help="Tag name to delete")
+    c.add_argument("--private", action="store_true", help="Required for private ReminderKit tag rewrites")
+    c.add_argument("--force", action="store_true", help="Skip confirmation prompt")
+    js(c)
+
+    c = sub.add_parser(
         "template-create",
         help="Create a private Reminders template from an entire list",
         description=(
@@ -11006,6 +11205,8 @@ def main():
         "smart-list-create": cmd_smart_list_create,
         "smart-list-edit": cmd_smart_list_edit,
         "smart-list-delete": cmd_smart_list_delete,
+        "tag-rename": cmd_tag_rename,
+        "tag-delete": cmd_tag_delete,
         "template-create": cmd_template_create,
         "template-apply": cmd_template_apply,
         "template-delete": cmd_template_delete,

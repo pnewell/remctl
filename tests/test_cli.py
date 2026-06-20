@@ -2701,6 +2701,207 @@ class CliTests(unittest.TestCase):
         private_call.assert_not_called()
         self.assertIn("custom smart list not found", stderr.getvalue())
 
+    def _tag_db(self, tag="work"):
+        db = sqlite3.connect(":memory:")
+        db.row_factory = sqlite3.Row
+        db.execute(
+            "CREATE TABLE ZREMCDREMINDER ("
+            "Z_PK INTEGER PRIMARY KEY, ZCKIDENTIFIER TEXT, ZTITLE TEXT, ZMARKEDFORDELETION INTEGER)"
+        )
+        db.execute("CREATE TABLE ZREMCDHASHTAGLABEL (Z_PK INTEGER PRIMARY KEY, ZNAME TEXT)")
+        db.execute("CREATE TABLE ZREMCDOBJECT (Z_PK INTEGER PRIMARY KEY, ZREMINDER3 INTEGER, ZHASHTAGLABEL INTEGER)")
+        db.execute(
+            "CREATE TABLE ZREMCDBASELIST ("
+            "Z_PK INTEGER PRIMARY KEY, ZNAME TEXT, ZCKIDENTIFIER TEXT, ZMARKEDFORDELETION INTEGER, "
+            "Z_ENT INTEGER, ZSMARTLISTTYPE TEXT, ZFILTERDATA BLOB, "
+            "ZMINIMUMSUPPORTEDAPPVERSION INTEGER, ZEFFECTIVEMINIMUMSUPPORTEDAPPVERSION INTEGER, "
+            "ZISPINNEDBYCURRENTUSER INTEGER, ZPINNEDDATE REAL)"
+        )
+        db.execute("INSERT INTO ZREMCDREMINDER VALUES (1, 'CK-1', 'A', 0)")
+        db.execute("INSERT INTO ZREMCDREMINDER VALUES (2, 'CK-2', 'B', 0)")
+        db.execute("INSERT INTO ZREMCDHASHTAGLABEL VALUES (1, ?)", (tag,))
+        db.execute("INSERT INTO ZREMCDOBJECT VALUES (1, 1, 1)")
+        db.execute("INSERT INTO ZREMCDOBJECT VALUES (2, 2, 1)")
+        db.execute(
+            "INSERT INTO ZREMCDBASELIST "
+            "(Z_PK, ZNAME, ZCKIDENTIFIER, ZMARKEDFORDELETION, Z_ENT, ZSMARTLISTTYPE, ZFILTERDATA, "
+            "ZMINIMUMSUPPORTEDAPPVERSION, ZEFFECTIVEMINIMUMSUPPORTEDAPPVERSION, ZISPINNEDBYCURRENTUSER, ZPINNEDDATE) "
+            "VALUES (?, ?, ?, 0, 4, ?, ?, ?, ?, ?, ?)",
+            (
+                3,
+                "Tagged",
+                "CUSTOM-1",
+                self.remctl.CUSTOM_SMART_LIST_TYPE,
+                b'{"hashtags":{"hashtags":{"operation":"or","include":["' + tag.encode() + b'"],"exclude":[]}}}',
+                20220430,
+                20220430,
+                None,
+                None,
+            ),
+        )
+        return db
+
+    def test_tag_rename_rejects_without_private_before_helper(self):
+        args = SimpleNamespace(old="work", new="job", private=False, json=True)
+        with (
+            mock.patch.object(self.remctl, "private_available") as private_available,
+            mock.patch.object(self.remctl, "private_call") as private_call,
+            contextlib.redirect_stderr(io.StringIO()) as stderr,
+            self.assertRaises(SystemExit),
+        ):
+            self.remctl.cmd_tag_rename(args)
+
+        private_available.assert_not_called()
+        private_call.assert_not_called()
+        self.assertIn("--private", stderr.getvalue())
+
+    def test_tag_rename_rejects_missing_tag_before_helper(self):
+        db = self._tag_db()
+        args = SimpleNamespace(old="missing", new="job", private=True, force=True, json=True)
+        try:
+            with (
+                mock.patch.object(self.remctl, "private_available", return_value=True),
+                mock.patch.object(self.remctl, "open_db", return_value=db),
+                mock.patch.object(self.remctl, "private_call") as private_call,
+                contextlib.redirect_stderr(io.StringIO()) as stderr,
+                self.assertRaises(SystemExit),
+            ):
+                self.remctl.cmd_tag_rename(args)
+        finally:
+            db.close()
+
+        private_call.assert_not_called()
+        self.assertIn("tag not found", stderr.getvalue())
+
+    def test_tag_rename_rewrites_reminders_and_smart_list_filter(self):
+        db = self._tag_db()
+        args = SimpleNamespace(old="work", new="job", private=True, force=True, json=True)
+        try:
+            with (
+                mock.patch.object(self.remctl, "private_available", return_value=True),
+                mock.patch.object(self.remctl, "open_db", return_value=db),
+                mock.patch.object(self.remctl, "private_call", return_value={"status": "updated"}) as private_call,
+                contextlib.redirect_stdout(io.StringIO()) as stdout,
+            ):
+                self.remctl.cmd_tag_rename(args)
+        finally:
+            db.close()
+
+        calls = [call.args[0] for call in private_call.call_args_list]
+        self.assertEqual(
+            calls[0],
+            {
+                "action": "rewrite_reminder_hashtags",
+                "reminderIds": ["CK-1", "CK-2"],
+                "removeTags": ["work"],
+                "addTags": ["job"],
+            },
+        )
+        self.assertEqual(calls[1]["action"], "update_smart_list")
+        self.assertEqual(calls[1]["smartListId"], "CUSTOM-1")
+        filter_data = base64.b64decode(calls[1]["filterData"]).decode("utf-8")
+        self.assertIn('"include":["job"]', filter_data)
+        payload = json.loads(stdout.getvalue())
+        self.assertEqual(payload["remindersUpdated"], 2)
+        self.assertEqual(payload["smartListsUpdated"], ["Tagged"])
+
+    def test_tag_delete_rejects_without_private_before_helper(self):
+        args = SimpleNamespace(name="work", private=False, force=True, json=True)
+        with (
+            mock.patch.object(self.remctl, "private_available") as private_available,
+            mock.patch.object(self.remctl, "private_call") as private_call,
+            contextlib.redirect_stderr(io.StringIO()) as stderr,
+            self.assertRaises(SystemExit),
+        ):
+            self.remctl.cmd_tag_delete(args)
+
+        private_available.assert_not_called()
+        private_call.assert_not_called()
+        self.assertIn("--private", stderr.getvalue())
+
+    def test_tag_delete_drops_tag_from_reminders_and_smart_list_filter(self):
+        db = self._tag_db()
+        args = SimpleNamespace(name="work", private=True, force=True, json=True)
+        try:
+            with (
+                mock.patch.object(self.remctl, "private_available", return_value=True),
+                mock.patch.object(self.remctl, "open_db", return_value=db),
+                mock.patch.object(self.remctl, "private_call", return_value={"status": "updated"}) as private_call,
+                contextlib.redirect_stdout(io.StringIO()) as stdout,
+                contextlib.redirect_stderr(io.StringIO()) as stderr,
+            ):
+                self.remctl.cmd_tag_delete(args)
+        finally:
+            db.close()
+
+        calls = [call.args[0] for call in private_call.call_args_list]
+        self.assertEqual(
+            calls[0],
+            {
+                "action": "rewrite_reminder_hashtags",
+                "reminderIds": ["CK-1", "CK-2"],
+                "removeTags": ["work"],
+                "addTags": [],
+            },
+        )
+        # The smart list filtered only on "work", so its filter empties; remctl drops the
+        # hashtag filter and warns rather than writing the zero-filter the create path rejects.
+        self.assertFalse(any(c["action"] == "update_smart_list" for c in calls))
+        self.assertIn("left smart list", stderr.getvalue())
+        payload = json.loads(stdout.getvalue())
+        self.assertEqual(payload["remindersUpdated"], 2)
+        self.assertEqual(payload["smartListsUpdated"], [])
+
+    def test_tag_rename_reports_partial_failures(self):
+        db = self._tag_db()
+        args = SimpleNamespace(old="work", new="job", private=True, force=True, json=True)
+        try:
+            with (
+                mock.patch.object(self.remctl, "private_available", return_value=True),
+                mock.patch.object(self.remctl, "open_db", return_value=db),
+                mock.patch.object(
+                    self.remctl,
+                    "private_call",
+                    return_value={"status": "updated", "updated": 1, "failed": [{"id": "CK-2", "error": "boom"}]},
+                ),
+                contextlib.redirect_stdout(io.StringIO()) as stdout,
+                contextlib.redirect_stderr(io.StringIO()),
+            ):
+                self.remctl.cmd_tag_rename(args)
+        finally:
+            db.close()
+        payload = json.loads(stdout.getvalue())
+        self.assertEqual(payload["remindersUpdated"], 2)
+        self.assertIn("failures", payload)
+        self.assertEqual(payload["failures"], [{"id": "CK-2", "error": "boom"}])
+
+    def _tag_db_with_tombstone(self, tag="work"):
+        db = self._tag_db(tag)
+        db.execute("INSERT INTO ZREMCDREMINDER VALUES (3, 'CK-TOMB', 'Tombstoned', 1)")
+        db.execute("INSERT INTO ZREMCDOBJECT VALUES (3, 3, 1)")
+        return db
+
+    def test_tag_rename_excludes_tombstoned_reminders(self):
+        db = self._tag_db_with_tombstone()
+        args = SimpleNamespace(old="work", new="job", private=True, force=True, json=True)
+        try:
+            with (
+                mock.patch.object(self.remctl, "private_available", return_value=True),
+                mock.patch.object(self.remctl, "open_db", return_value=db),
+                mock.patch.object(
+                    self.remctl,
+                    "private_call",
+                    return_value={"status": "updated"},
+                ) as private_call,
+                contextlib.redirect_stdout(io.StringIO()),
+                contextlib.redirect_stderr(io.StringIO()),
+            ):
+                self.remctl.cmd_tag_rename(args)
+        finally:
+            db.close()
+        batched = private_call.call_args_list[0].args[0]
+        self.assertNotIn("CK-TOMB", batched["reminderIds"])
+
     def test_import_accepts_due_date_from_exported_json(self):
         created_args = []
 

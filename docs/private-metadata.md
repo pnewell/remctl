@@ -32,6 +32,7 @@ Verified on macOS/iCloud sync:
 - list and smart-list pin state: `list-pin "Project X" --private`, `list-pin "Flagged" --private`, `list-unpin --smart-list-id 4 --private`
 - list groups: `group-create "Writing" --private --add-list Editorial`, `list-create "Ideas" --private --group Writing`, `group-edit "Writing" --private --add-list Ideas --remove-list Socials`, `group-edit "Writing" --private --move-list Ideas --last`, and `group-delete "Writing" --private --force`
 - custom smart lists with verified materializing Reminders filters: `smart-list-create "Flagged Review" --private --flagged`, `smart-list-create "Priority or Today" --private --match any --priority high,medium --date today`, `smart-list-create "Projects Today" --private --include-list Projects --date today --date-today-include-past-due`, and exact custom smart-list cleanup via `smart-list-delete "Flagged Review" --private --force`
+- tag rename and delete across every reminder: `tag-rename work job --private`, `tag-delete work --private --force`
 - Reminders templates: `template-create "Packing Template" --from-list Packing --private`, `template-apply "Packing Template" --private`, and exact cleanup via `template-delete "Packing Template" --private --force`
 
 Not exposed:
@@ -207,6 +208,16 @@ remctl smart-list-delete "Flagged Review" --private --force
 `smart-list-delete` deletes through ReminderKit and requires `--private`. It only targets custom smart lists by exact name or numeric `--smart-list-id`; built-in smart lists are never matched.
 
 Developer note: on the verified macOS 26 store, `ZFILTERDATA` for custom smart lists is UTF-8 JSON bytes. The decoder also accepts older research samples that wrap the same JSON in an `NSKeyedArchiver` object whose root class is `ReminderKitInternal.REMCustomSmartListFilterDescriptor`, keyed field is `data`, and payload is UTF-8 JSON. Known decoded keys are `operation`, `hashtags`, `date`, `time`, `priorities`, `flagged`, `location`, and `lists`, but not every decoded shape materializes when written back. For selected tags, Reminders.app materializes `{"hashtags":{"hashtags":{"operation":"or","include":["remctl"],"exclude":[]}}}` and can show zero filter rows for the legacy short form `{"hashtags":{"hashtags":["remctl"]}}`; RemCTL decodes the legacy form but does not write it. The `lists` key is a single filter descriptor; Reminders.app currently materializes only one included list through this write path.
+
+## Tag Examples
+
+```bash
+remctl tags
+remctl tag-rename work job --private
+remctl tag-delete work --private --force
+```
+
+Tags are account-level `REMHashtagLabel` rows in `ZREMCDHASHTAGLABEL`, referenced by per-reminder `REMHashtag` objects. There is no single rename-label API, so `tag-rename` and `tag-delete` reuse the same tag-read join the `tags` and `info` commands use to enumerate every reminder carrying the tag, then fan out a `rewrite_reminder_hashtags` ReminderKit write per reminder: each fetches the reminder's current hashtags through `REMReminderHashtagContext`, matches by name, and `removeHashtag:` (delete) or `removeHashtag:` plus `addHashtagWithType:1 name:` (rename) on the reminder change item before saving. After rewriting reminders, both decode any custom smart-list `filterData` that references the tag, rewrite the include/exclude lists, and write it back through `update_smart_list` so Reminders' `hashtagLabelsInCustomSmartListFilterCache` stays consistent; deleting the last reference drops the label from the picker. A custom smart list whose only filter was the deleted tag is left unchanged with a warning rather than written as an empty filter. Both require `--private`, fail before writing on a missing tag, and tag writes also apply to completed reminders. They do not write SQLite.
 
 ## Template Examples
 

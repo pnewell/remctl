@@ -301,6 +301,16 @@ remctl smart-list-delete "Flagged Review" --private --force
 
 `smart-list-edit` replaces the filter for an existing custom smart list by exact name or `--smart-list-id`. `smart-list-delete` only matches custom smart lists by exact name or `--smart-list-id`, never built-in smart lists, and requires `--private`.
 
+## Tag Management
+
+```bash
+remctl tags
+remctl tag-rename work job --private
+remctl tag-delete work --private --force
+```
+
+`tags` lists every hashtag label. `tag-rename` and `tag-delete` are private ReminderKit commands and always require `--private`. There is no single rename-label API, so both fan out the rewrite across every reminder that carries the tag (this is what Reminders.app does internally): `tag-rename` removes the old tag and adds the new one on each reminder, and `tag-delete` removes it. After rewriting reminders, both also rewrite any custom smart-list filter that references the tag so the filter stays consistent; deleting the last reference drops the label from the picker. A smart list whose only filter was the deleted tag is left unchanged with a warning rather than emptied. Both fail before writing on a missing tag, and `tag-rename` rejects a new name equal to the old one. Tagging works on completed reminders too. Verify with `remctl tags` and `remctl info <id> --json`.
+
 ## Templates
 
 ```bash

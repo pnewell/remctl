@@ -60,7 +60,7 @@ Full setup details live in [docs/installation.md](docs/installation.md).
 | See what is due | `today`, `upcoming`, `overdue` |
 | Browse reminders | `lists`, `groups`, `group-info`, `smart-lists`, `templates`, `template-info`, `show`, `search`, `flagged`, `urgent`, `info`, `subtasks`, `sharees` |
 | Create and edit | `add`, `edit`, `done`, `undone`, `delete`, `flag`, `unflag` |
-| Organize | `list-symbols`, `list-create`, `list-edit`, `list-pin`, `list-unpin`, `list-rename`, `list-delete`, `group-create`, `group-edit`, `group-delete`, `smart-list-create`, `smart-list-edit`, `smart-list-delete`, `template-create`, `template-apply`, `template-delete`, `sections`, `tags` |
+| Organize | `list-symbols`, `list-create`, `list-edit`, `list-pin`, `list-unpin`, `list-rename`, `list-delete`, `group-create`, `group-edit`, `group-delete`, `smart-list-create`, `smart-list-edit`, `smart-list-delete`, `template-create`, `template-apply`, `template-delete`, `sections`, `tags`, `tag-rename`, `tag-delete` |
 | Share data | `export`, `import`, `link`, `open`, `--json`, `--format table` on tabular read commands |
 | Set up the Mac | `onboard`, `permissions`, `doctor`, `setup`, `completion` |
 
@@ -177,6 +177,18 @@ Smart-list writes are private ReminderKit writes and always require `--private`;
 - [docs/commands.md#smart-lists](docs/commands.md#smart-lists) for command syntax and supported filters.
 - [docs/private-metadata.md#smart-list-examples](docs/private-metadata.md#smart-list-examples) for private API behavior, safety notes, and reverse-engineered filter storage details.
 - [SKILL.md](SKILL.md) for the concise agent contract.
+
+## Tags
+
+RemCTL lists tags with `tags` and can rename or delete a tag everywhere it is used through private ReminderKit APIs. There is no rename-label API, so both commands fan out the rewrite across every reminder that carries the tag and rewrite any custom smart-list filter that references it.
+
+```bash
+remctl tags
+remctl tag-rename work job --private
+remctl tag-delete work --private --force
+```
+
+`tag-rename` and `tag-delete` always require `--private` and fail before writing on a missing tag. Verify with `remctl tags` and `remctl info <id> --json`.
 
 ## Templates
 
